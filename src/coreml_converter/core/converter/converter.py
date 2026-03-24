@@ -25,7 +25,6 @@ def check_disk_space(path: Path, required_gb: float = 20.0) -> None:
 
 
 def _compute_unit_enum(compute_units: str):
-    """Map config string to coremltools compute unit enum."""
     import coremltools as ct
     mapping = {
         "all": ct.ComputeUnit.ALL,
@@ -34,39 +33,6 @@ def _compute_unit_enum(compute_units: str):
         "cpu_and_gpu": ct.ComputeUnit.CPU_AND_GPU,
     }
     return mapping.get(compute_units, ct.ComputeUnit.ALL)
-
-
-def _convert_component(pipe_component, component_name: str, sample_input,
-                       output_dir: Path, precision: str, compute_units: str,
-                       report: Callable[[str], None] | None = None):
-    """Convert a single pipeline component to CoreML."""
-    import torch
-    import coremltools as ct
-
-    if pipe_component is None:
-        return None
-
-    if report:
-        report(f"Converting {component_name}...")
-
-    # Trace the model
-    pipe_component.eval()
-    with torch.no_grad():
-        traced = torch.jit.trace(pipe_component, sample_input)
-
-    # Convert to CoreML
-    ct_precision = ct.precision.FLOAT16 if precision == "float16" else ct.precision.FLOAT32
-    mlmodel = ct.convert(
-        traced,
-        convert_to="mlprogram",
-        compute_precision=ct_precision,
-        compute_units=_compute_unit_enum(compute_units),
-    )
-
-    # Save
-    out_path = output_dir / f"{component_name}.mlpackage"
-    mlmodel.save(str(out_path))
-    return out_path
 
 
 class Converter:
@@ -84,6 +50,9 @@ class Converter:
         output_dir = config.output_dir / config.model_name
         output_dir.mkdir(parents=True, exist_ok=True)
 
+        ct_precision = ct.precision.FLOAT16 if config.precision == "float16" else ct.precision.FLOAT32
+        ct_compute = _compute_unit_enum(config.compute_units)
+
         def _report(msg, pct):
             if progress_callback:
                 progress_callback(msg, pct)
@@ -95,141 +64,149 @@ class Converter:
         _report("Loading merged pipeline for conversion", 0.05)
         pipe = StableDiffusionPipeline.from_pretrained(
             str(merged_model_path),
-            torch_dtype=torch.float32,  # Need float32 for tracing
+            torch_dtype=torch.float32,
         )
-        # Set all submodules to eval mode (pipeline itself isn't a nn.Module)
-        for attr in ["text_encoder", "unet", "vae", "safety_checker"]:
-            component = getattr(pipe, attr, None)
-            if component is not None and hasattr(component, "eval"):
-                component.eval()
 
-        # Determine sample shapes for SD1.5/2.0
-        # SD1.5: latent 64x64 (512px), SD2.0: latent 96x96 (768px)
+        # Determine sample shapes: SD1.5 = 64x64 latent, SD2.0 = 96x96
         arch = recipe.base_model.base_architecture.value
-        if arch == "SD2.0":
-            latent_h, latent_w = 96, 96
-        else:
-            latent_h, latent_w = 64, 64
+        latent_h, latent_w = (96, 96) if arch == "SD2.0" else (64, 64)
+        hidden_size = pipe.text_encoder.config.hidden_size  # 768 for SD1.5, 1024 for SD2.0
 
         components_converted = []
 
-        # 1. Text Encoder
-        _report("Converting text encoder to CoreML", 0.15)
+        # --- 1. Text Encoder ---
+        _report("Converting text encoder to CoreML", 0.10)
         try:
             text_encoder = pipe.text_encoder
-            sample_text_input = torch.randint(0, 1000, (1, 77))
-            text_encoder_path = output_dir / "TextEncoder.mlpackage"
-
             text_encoder.eval()
-            with torch.no_grad():
-                traced_te = torch.jit.trace(text_encoder, sample_text_input)
 
-            ct_precision = ct.precision.FLOAT16 if config.precision == "float16" else ct.precision.FLOAT32
+            # Wrapper to return only last_hidden_state tensor (not a dict)
+            class TextEncoderWrapper(torch.nn.Module):
+                def __init__(self, encoder):
+                    super().__init__()
+                    self.encoder = encoder
+
+                def forward(self, input_ids):
+                    return self.encoder(input_ids)[0]  # last_hidden_state
+
+            wrapper = TextEncoderWrapper(text_encoder)
+            wrapper.eval()
+
+            sample_input = torch.randint(0, 1000, (1, 77))
+            with torch.no_grad():
+                traced = torch.jit.trace(wrapper, sample_input, strict=False)
+
             te_model = ct.convert(
-                traced_te,
+                traced,
+                inputs=[ct.TensorType(name="input_ids", shape=(1, 77), dtype=int)],
                 convert_to="mlprogram",
                 compute_precision=ct_precision,
-                compute_units=_compute_unit_enum(config.compute_units),
+                compute_units=ct_compute,
             )
-            te_model.save(str(text_encoder_path))
+
+            te_path = output_dir / "TextEncoder.mlpackage"
+            te_model.save(str(te_path))
             components_converted.append("TextEncoder")
             logger.info("Text encoder converted successfully")
         except Exception as e:
-            logger.warning(f"Text encoder conversion failed: {e}")
+            logger.error(f"Text encoder conversion failed: {e}")
+            _report(f"Text encoder failed: {e}", 0.15)
 
-        # 2. UNet
-        _report("Converting UNet to CoreML (this is the big one)", 0.35)
+        # --- 2. UNet ---
+        _report("Converting UNet to CoreML (largest component, may take minutes)", 0.25)
         try:
             unet = pipe.unet
-            unet_path = output_dir / "Unet.mlpackage"
+            unet.eval()
 
-            # UNet inputs: sample, timestep, encoder_hidden_states
+            # Wrapper to call with return_dict=False and return just the sample
+            class UNetWrapper(torch.nn.Module):
+                def __init__(self, unet):
+                    super().__init__()
+                    self.unet = unet
+
+                def forward(self, sample, timestep, encoder_hidden_states):
+                    return self.unet(sample, timestep, encoder_hidden_states, return_dict=False)[0]
+
+            unet_wrapper = UNetWrapper(unet)
+            unet_wrapper.eval()
+
             sample_latent = torch.randn(1, 4, latent_h, latent_w)
             sample_timestep = torch.tensor([1.0])
-            sample_hidden = torch.randn(1, 77, pipe.text_encoder.config.hidden_size)
+            sample_hidden = torch.randn(1, 77, hidden_size)
 
-            unet.eval()
             with torch.no_grad():
-                traced_unet = torch.jit.trace(
-                    unet,
+                traced = torch.jit.trace(
+                    unet_wrapper,
                     (sample_latent, sample_timestep, sample_hidden),
+                    strict=False,
                 )
 
             unet_model = ct.convert(
-                traced_unet,
+                traced,
+                inputs=[
+                    ct.TensorType(name="sample", shape=(1, 4, latent_h, latent_w)),
+                    ct.TensorType(name="timestep", shape=(1,)),
+                    ct.TensorType(name="encoder_hidden_states", shape=(1, 77, hidden_size)),
+                ],
                 convert_to="mlprogram",
                 compute_precision=ct_precision,
-                compute_units=_compute_unit_enum(config.compute_units),
+                compute_units=ct_compute,
             )
+
+            unet_path = output_dir / "Unet.mlpackage"
             unet_model.save(str(unet_path))
             components_converted.append("Unet")
             logger.info("UNet converted successfully")
         except Exception as e:
-            logger.warning(f"UNet conversion failed: {e}")
+            logger.error(f"UNet conversion failed: {e}")
+            _report(f"UNet failed: {e}", 0.55)
 
-        # 3. VAE Decoder
-        _report("Converting VAE decoder to CoreML", 0.75)
+        # --- 3. VAE Decoder ---
+        _report("Converting VAE decoder to CoreML", 0.70)
         try:
             vae = pipe.vae
-            vae_decoder_path = output_dir / "VAEDecoder.mlpackage"
+            vae.eval()
 
-            sample_vae_input = torch.randn(1, 4, latent_h, latent_w)
-
-            # We need just the decoder part
-            class VAEDecoder(torch.nn.Module):
+            class VAEDecoderWrapper(torch.nn.Module):
                 def __init__(self, vae):
                     super().__init__()
                     self.vae = vae
 
                 def forward(self, z):
-                    return self.vae.decode(z).sample
+                    return self.vae.decode(z, return_dict=False)[0]
 
-            vae_dec = VAEDecoder(vae)
-            vae_dec.eval()
+            vae_wrapper = VAEDecoderWrapper(vae)
+            vae_wrapper.eval()
+
+            sample_z = torch.randn(1, 4, latent_h, latent_w)
             with torch.no_grad():
-                traced_vae = torch.jit.trace(vae_dec, sample_vae_input)
+                traced = torch.jit.trace(vae_wrapper, sample_z, strict=False)
 
             vae_model = ct.convert(
-                traced_vae,
+                traced,
+                inputs=[
+                    ct.TensorType(name="z", shape=(1, 4, latent_h, latent_w)),
+                ],
                 convert_to="mlprogram",
                 compute_precision=ct_precision,
-                compute_units=_compute_unit_enum(config.compute_units),
+                compute_units=ct_compute,
             )
-            vae_model.save(str(vae_decoder_path))
+
+            vae_path = output_dir / "VAEDecoder.mlpackage"
+            vae_model.save(str(vae_path))
             components_converted.append("VAEDecoder")
             logger.info("VAE decoder converted successfully")
         except Exception as e:
-            logger.warning(f"VAE decoder conversion failed: {e}")
-
-        # 4. Safety checker (optional)
-        if config.include_safety_checker and pipe.safety_checker is not None:
-            _report("Converting safety checker to CoreML", 0.85)
-            try:
-                # Safety checker is complex; skip tracing, just note it
-                logger.info("Safety checker skipped (complex architecture)")
-            except Exception as e:
-                logger.warning(f"Safety checker conversion failed: {e}")
+            logger.error(f"VAE decoder conversion failed: {e}")
+            _report(f"VAE decoder failed: {e}", 0.80)
 
         elapsed = time.monotonic() - start_time
 
-        # Compile to mlmodelc
-        _report("Compiling models", 0.90)
-        mlmodelc_dir = output_dir / f"{config.model_name}.mlmodelc"
-        mlmodelc_dir.mkdir(exist_ok=True)
-        for comp in components_converted:
-            src = output_dir / f"{comp}.mlpackage"
-            if src.exists():
-                try:
-                    compiled = ct.models.MLModel(str(src))
-                    compiled_path = mlmodelc_dir / f"{comp}.mlmodelc"
-                    # mlmodelc is created by the system when loading
-                    shutil.copytree(str(src), str(compiled_path), dirs_exist_ok=True)
-                except Exception as e:
-                    logger.warning(f"Compilation of {comp} failed: {e}")
+        if not components_converted:
+            raise RuntimeError("All component conversions failed. Check logs for details.")
 
         # Write manifest
         _report("Writing manifest", 0.95)
-        mlpackage_path = output_dir / "Unet.mlpackage"  # Primary model
         manifest_path = output_dir / "manifest.json"
         self._write_manifest(recipe, manifest_path, components_converted)
 
@@ -244,13 +221,13 @@ class Converter:
 
         _report("Conversion complete", 1.0)
         logger.info(
-            f"Conversion done: {len(components_converted)} components, "
+            f"Conversion done: {len(components_converted)}/3 components, "
             f"{model_size_mb:.1f} MB, {elapsed:.1f}s"
         )
 
         return ConversionResult(
-            mlpackage_path=mlpackage_path,
-            mlmodelc_path=mlmodelc_dir,
+            mlpackage_path=output_dir,
+            mlmodelc_path=output_dir,
             manifest_path=manifest_path,
             conversion_time=elapsed,
             model_size_mb=model_size_mb,
