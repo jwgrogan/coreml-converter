@@ -9,14 +9,15 @@ A Python tool (CLI + local web UI) that converts Stable Diffusion 1.5/2.0 checkp
 
 ## Architecture
 
-**Approach: Pipeline Architecture** — four layers with clean interfaces:
+**Approach: Pipeline Architecture** — three layers with clean interfaces:
 
 1. **Core library** (`coreml_converter.core`) — model registry, compatibility analyzer, LoRA merger, CoreML converter
 2. **CLI** (`coreml_converter.cli`) — Click-based, thin wrapper over core
 3. **Web UI** (`coreml_converter.web`) — FastAPI + Jinja2 + htmx/Alpine.js
-4. **TUI** (`coreml_converter.tui`) — Textual app (stretch goal)
 
-All interfaces share the core library. No duplication of business logic.
+All interfaces share the core library. No duplication of business logic. A Textual TUI is a potential future addition but is not part of v1.
+
+**Requirements:** Python 3.10+, macOS 13+ (Ventura) on Apple Silicon.
 
 ## Project Structure
 
@@ -38,7 +39,7 @@ coreml-converter/
 │       │   ├── routes/
 │       │   ├── templates/      # Jinja2 + htmx
 │       │   └── static/
-│       └── tui/                # Stretch goal
+│       └── tui/                # Future (not v1)
 ├── tests/
 └── docs/
 ```
@@ -59,30 +60,70 @@ coreml-converter/
 - Download `.safetensors` to local cache
 - Rate limiting: token bucket, 2-3 req/sec
 
+**API Authentication:**
+- **CivitAI:** API key required for downloads. Stored in `~/.coreml-converter/config.json` or via `CIVITAI_API_KEY` env var. CLI `config set civitai-key <key>` to save. Prompted on first use if missing.
+- **HuggingFace:** Token via `huggingface_hub` login (standard `HF_TOKEN` env var or `huggingface-cli login`). Gated models require a token; ungated models work without one. The tool surfaces a clear message when a gated model requires auth.
+
 **Shared abstractions:**
 
 ```python
-class ModelSource(Enum):
+class ModelSource(str, Enum):
     HUGGINGFACE = "huggingface"
     CIVITAI = "civitai"
 
-class ModelInfo:
+class BaseArchitecture(str, Enum):
+    SD15 = "SD1.5"
+    SD20 = "SD2.0"
+
+class ModelType(str, Enum):
+    CHECKPOINT = "checkpoint"
+    LORA = "lora"
+
+class ModelInfo(BaseModel):  # pydantic.BaseModel
     source: ModelSource
     id: str
     name: str
-    base_architecture: str  # "SD1.5" | "SD2.0"
-    model_type: str         # "checkpoint" | "lora"
+    base_architecture: BaseArchitecture
+    model_type: ModelType
     tags: list[str]
     download_url: str
     metadata: dict
 
-class Registry:
-    async def search(query, source, model_type, base_arch) -> list[ModelInfo]
-    async def get_compatible_loras(base_model: ModelInfo) -> list[ModelInfo]
-    async def download(model: ModelInfo, dest: Path) -> Path
+class LoRAEntry(BaseModel):
+    model: ModelInfo
+    weight: float = 1.0           # 0.0-1.0
+    recommended_weight: float | None = None
+    weight_source: str | None = None  # "creator" | "community" | "category_default"
+
+class Recipe(BaseModel):
+    name: str
+    base_model: ModelInfo
+    loras: list[LoRAEntry]        # ordered — application order matters
+    conversion_config: ConversionConfig
+
+class BuildRecord(BaseModel):
+    id: str
+    recipe: Recipe
+    status: str                   # "pending" | "running" | "completed" | "failed"
+    started_at: datetime | None
+    completed_at: datetime | None
+    result: ConversionResult | None
+    error: str | None
+    schema_version: int = 1
 ```
 
-**Local cache:** `~/.coreml-converter/cache/` keyed by source + ID. CLI `cache clear` to manage.
+**Registry interface** — synchronous methods. The FastAPI web layer runs I/O-bound calls (search, download) in `ThreadPoolExecutor` via `run_in_executor()`. CPU-bound work (merge, conversion) runs in `ProcessPoolExecutor`.
+
+```python
+class Registry:
+    def search(query, source, model_type, base_arch) -> list[ModelInfo]
+    def get_compatible_loras(base_model: ModelInfo) -> list[ModelInfo]
+    def download(model: ModelInfo, dest: Path) -> Path
+```
+
+Note: `huggingface_hub.snapshot_download` and `httpx` CivitAI calls are synchronous. For HuggingFace LoRAs (which lack CivitAI metadata), weight guidance falls back to category defaults. If no category can be inferred, default weight is 1.0.
+
+**Local cache:** `~/.coreml-converter/cache/` keyed by source + ID. CLI `cache clear` to manage. HuggingFace downloads are natively resumable via `snapshot_download`. CivitAI downloads use `httpx` with range headers for resume support; partial files are suffixed `.partial` and cleaned up on failure after retries are exhausted.
 
 ### Analyzer — Compatibility & Conflict Detection
 
@@ -103,7 +144,7 @@ class Registry:
 **Conflict detection — weight overlap analysis:**
 - Compare which layers each LoRA modifies most heavily (L2 norm of delta)
 - If two LoRAs share >50% weight mass in same layers, flag as "high overlap"
-- Sub-second operation, just tensor math
+- Fast operation once weights are loaded in memory (loading from disk may add I/O time for large LoRAs)
 
 **LoRA count warnings:**
 - 1-3: green
@@ -113,7 +154,7 @@ class Registry:
 **Output:**
 
 ```python
-class CompatibilityReport:
+class CompatibilityReport(BaseModel):
     is_compatible: bool
     architecture_match: bool
     dimension_check: DimensionResult | None
@@ -142,8 +183,8 @@ Builder UI shows: pre-filled slider, recommended range indicator, tooltip with s
 class Merger:
     def merge(self, recipe: Recipe) -> Path:
         # 1. Load base model into diffusers
-        #    - diffusers format: load directly
-        #    - .safetensors/.ckpt: convert to diffusers first
+        #    - diffusers format: StableDiffusionPipeline.from_pretrained()
+        #    - .safetensors/.ckpt: StableDiffusionPipeline.from_single_file()
         # 2. For each LoRA in recipe (ordered):
         #    - pipe.load_lora_weights()
         #    - pipe.fuse_lora(lora_scale=weight)
@@ -153,20 +194,22 @@ class Merger:
 
 - Application order matters — users can drag-to-reorder in UI
 - Default weight 1.0, user-tunable per LoRA
+- `.ckpt` support: `.ckpt` files can contain arbitrary pickled code. The tool shows a security warning before loading `.ckpt` files and requires user confirmation. `.safetensors` is recommended and preferred.
 
 ### Converter — diffusers to CoreML
 
 Wraps Apple's `python_coreml_stable_diffusion` tooling.
 
 ```python
-class ConversionConfig:
+class ConversionConfig(BaseModel):
     compute_units: str       # "cpuAndGPU" | "all"
     attention: str           # "split_einsum" | "original"
     precision: str           # "float16" | "float32"
+    include_safety_checker: bool = False  # Most custom models skip it
     output_dir: Path
     model_name: str
 
-class ConversionResult:
+class ConversionResult(BaseModel):
     mlpackage_path: Path
     mlmodelc_path: Path
     manifest_path: Path
@@ -174,12 +217,24 @@ class ConversionResult:
     model_size_mb: float
 ```
 
-Converts each component (text_encoder, unet, vae_decoder, safety_checker), compiles to `.mlmodelc`, generates recipe manifest.
+Converts each component (text_encoder, unet, vae_decoder, optionally safety_checker), compiles to `.mlmodelc`, generates recipe manifest.
+
+**Mapping to Apple's `python_coreml_stable_diffusion` flags:**
+- `compute_units` → `--compute-unit` (e.g., `cpu_and_gpu`, `all`)
+- `attention` → `--attention-implementation` (e.g., `SPLIT_EINSUM`, `ORIGINAL`)
+- `precision: "float16"` → default `coremltools` precision (`ct.precision.FLOAT16`, the default for Apple Silicon — no extra flag needed). `"float32"` disables float16 conversion.
+- Each component converted via `--convert-text-encoder`, `--convert-unet`, `--convert-vae-decoder`
+- Compilation via `--bundle-resources-for-swift-cli`
+
+**Disk space:** A full build (base + LoRAs + merged + CoreML output) can consume 10-15 GB. The build pipeline runs a pre-flight disk space check and warns if available space is below 20 GB.
 
 ### Recipe Manifest (JSON)
 
+The manifest is a serialized subset of `Recipe` + build metadata. It intentionally trims bulky fields (download URLs, full metadata dicts) to keep it portable and human-readable. The `source` + `id` pair is sufficient to re-fetch any model.
+
 ```json
 {
+  "schema_version": 1,
   "name": "my-custom-model",
   "created": "2026-03-24T...",
   "base_model": {
@@ -194,7 +249,8 @@ Converts each component (text_encoder, unet, vae_decoder, safety_checker), compi
   "conversion": {
     "compute_units": "all",
     "attention": "split_einsum",
-    "precision": "float16"
+    "precision": "float16",
+    "include_safety_checker": false
   },
   "tool_version": "0.1.0"
 }
@@ -259,11 +315,12 @@ No auth — localhost, single user.
 
 **State files (all in `~/.coreml-converter/`):**
 - `cache/` — downloaded models
-- `history.json` — build history
-- `jobs.json` — in-flight job state
-- `config.json` — user preferences
+- `builds.json` — all build records (`BuildRecord` list), from pending through completed/failed. Single source of truth for both in-flight and historical builds. `BuildRecord.id` is a UUID4.
+- `config.json` — user preferences: default compute units, default attention, output directory, CivitAI API key. Schema defined by a `Config` Pydantic model with defaults.
 
-No database. All JSON. Sufficient for single-user local tool.
+No database. All JSON files include a `schema_version` field for forward-compatible migrations. Sufficient for single-user local tool.
+
+**Concurrency:** The CLI and web server are not designed for simultaneous use. `builds.json` uses file locking (`fcntl.flock`) as a safety measure, but the expected usage is either CLI or `serve`, not both at once.
 
 **Error handling:**
 - Downloads: retry 3x with backoff
