@@ -97,7 +97,11 @@ class Converter:
             str(merged_model_path),
             torch_dtype=torch.float32,  # Need float32 for tracing
         )
-        pipe.eval()
+        # Set all submodules to eval mode (pipeline itself isn't a nn.Module)
+        for attr in ["text_encoder", "unet", "vae", "safety_checker"]:
+            component = getattr(pipe, attr, None)
+            if component is not None and hasattr(component, "eval"):
+                component.eval()
 
         # Determine sample shapes for SD1.5/2.0
         # SD1.5: latent 64x64 (512px), SD2.0: latent 96x96 (768px)
