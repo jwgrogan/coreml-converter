@@ -1,16 +1,63 @@
-<article>
-    <header>
-        <span class="badge">{{ model.source.value }}</span>
-        <span class="badge">{{ model.base_architecture.value }}</span>
-        <span class="badge">{{ model.model_type.value }}</span>
-    </header>
-    <h4>{{ model.name }}</h4>
-    <p>{{ model.tags[:5] | join(", ") }}</p>
-    <footer>
-        {% if model.model_type.value == "checkpoint" %}
-            <a href="/build?base={{ model.source.value }}:{{ model.id }}" role="button">Use as Base</a>
-        {% else %}
-            <small>{{ model.source.value }}:{{ model.id }}</small>
+<article class="model-card">
+    {% set images = model.metadata.get("images", []) %}
+    {% if images %}
+    <div class="model-card-image">
+        <img src="{{ images[0] }}" alt="{{ model.name }}" loading="lazy">
+    </div>
+    {% else %}
+    <div class="model-card-image model-card-no-image">
+        <span>No Preview</span>
+    </div>
+    {% endif %}
+
+    <div class="model-card-body">
+        <div class="model-card-badges">
+            <span class="badge badge-source">{{ model.source.value }}</span>
+            <span class="badge badge-arch">{{ model.base_architecture.value }}</span>
+            <span class="badge badge-type">{{ model.model_type.value }}</span>
+        </div>
+
+        <h4 class="model-card-title">{{ model.name }}</h4>
+
+        {% set desc = model.metadata.get("description", "") %}
+        {% if desc %}
+        <p class="model-card-desc">{{ desc | striptags | truncate(120) }}</p>
         {% endif %}
-    </footer>
+
+        {% if model.metadata.get("download_count") %}
+        <small class="model-card-stats">{{ "{:,}".format(model.metadata.download_count) }} downloads</small>
+        {% endif %}
+
+        {% if model.tags %}
+        <div class="model-card-tags">
+            {% for tag in model.tags[:4] %}
+            <span class="tag">{{ tag }}</span>
+            {% endfor %}
+        </div>
+        {% endif %}
+    </div>
+
+    <div class="model-card-actions">
+        <!-- Favorite button -->
+        {% set fav_key = model.source.value + ":" + model.id %}
+        {% if fav_keys is defined and fav_key in fav_keys %}
+        <form hx-post="/favorites/remove" hx-target="closest article" hx-swap="outerHTML" style="display:inline;">
+            <input type="hidden" name="source" value="{{ model.source.value }}">
+            <input type="hidden" name="model_id" value="{{ model.id }}">
+            <button type="submit" class="btn-icon btn-fav active" title="Remove from favorites">&#9733;</button>
+        </form>
+        {% else %}
+        <form hx-post="/favorites/add" hx-target="closest .model-card-actions" hx-swap="innerHTML" style="display:inline;">
+            <input type="hidden" name="model_json" value='{{ model.model_dump_json() }}'>
+            <button type="submit" class="btn-icon btn-fav" title="Add to favorites">&#9734;</button>
+        </form>
+        {% endif %}
+
+        <!-- Action buttons -->
+        {% if model.model_type.value == "checkpoint" %}
+            <a href="/build?base={{ model.source.value }}:{{ model.id }}" role="button" class="btn-select">Use as Base</a>
+        {% else %}
+            <a href="/build?base=&lora={{ model.source.value }}:{{ model.id }}" role="button" class="btn-select outline">Add LoRA</a>
+        {% endif %}
+    </div>
 </article>

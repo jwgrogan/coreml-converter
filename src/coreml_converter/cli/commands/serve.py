@@ -16,6 +16,7 @@ def serve(port: int, host: str):
     from coreml_converter.core.registry.huggingface import HuggingFaceClient
     from coreml_converter.core.registry.civitai import CivitAIClient
     from coreml_converter.core.state import BuildStore
+    from coreml_converter.core.favorites import FavoritesStore
     from coreml_converter.web.app import create_app
     from coreml_converter.web.jobs import JobManager
 
@@ -31,6 +32,7 @@ def serve(port: int, host: str):
     build_store = BuildStore(app_dir / "builds.json")
     app.state.build_store = build_store
     app.state.job_manager = JobManager(cache_dir=app_dir / "cache", build_store=build_store)
+    app.state.favorites = FavoritesStore(app_dir / "favorites.json")
 
     console.print(f"[green]Starting CoreML Converter web UI[/green]")
     console.print(f"  http://{host}:{port}")

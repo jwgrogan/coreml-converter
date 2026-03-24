@@ -1,14 +1,27 @@
 {% extends "base.html" %}
 {% block content %}
-<h1>Search Models</h1>
-<form hx-get="/search" hx-target="#search-results" hx-trigger="submit">
+<div style="display:flex; justify-content:space-between; align-items:center;">
+    <h1>{% if show_favorites %}Favorites{% else %}Search Models{% endif %}</h1>
+    <div>
+        {% if show_favorites %}
+            <a href="/" role="button" class="outline">Back to Search</a>
+        {% else %}
+            <a href="/favorites" role="button" class="outline">View Favorites</a>
+        {% endif %}
+    </div>
+</div>
+
+{% if not show_favorites %}
+<form hx-get="/search" hx-target="#search-results" hx-trigger="submit" hx-indicator="#search-spinner">
     <div class="grid">
-        <input type="search" name="q" placeholder="Search models..." autofocus>
+        <input type="search" name="q" placeholder="Search models (leave empty for top results)..." autofocus>
         <select name="source">
             <option value="all">All Sources</option>
             <option value="hf">HuggingFace</option>
             <option value="civitai">CivitAI</option>
         </select>
+    </div>
+    <div class="grid">
         <select name="type">
             <option value="">All Types</option>
             <option value="checkpoint">Checkpoint</option>
@@ -22,6 +35,11 @@
         <button type="submit">Search</button>
     </div>
 </form>
+<div id="search-spinner" class="htmx-indicator" style="text-align:center; padding:1em;">
+    <span aria-busy="true">Searching...</span>
+</div>
+{% endif %}
+
 <div id="search-results">
     {% if results is not none %}
         {% include "partials/search_results.html" %}

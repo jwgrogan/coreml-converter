@@ -1,0 +1,11 @@
+<!-- Returned after favoriting - shows filled star -->
+<form hx-post="/favorites/remove" hx-target="closest .model-card-actions" hx-swap="innerHTML" style="display:inline;">
+    <input type="hidden" name="source" value="{{ model.source.value }}">
+    <input type="hidden" name="model_id" value="{{ model.id }}">
+    <button type="submit" class="btn-icon btn-fav active" title="Remove from favorites">&#9733;</button>
+</form>
+{% if model.model_type.value == "checkpoint" %}
+    <a href="/build?base={{ model.source.value }}:{{ model.id }}" role="button" class="btn-select">Use as Base</a>
+{% else %}
+    <a href="/build?base=&lora={{ model.source.value }}:{{ model.id }}" role="button" class="btn-select outline">Add LoRA</a>
+{% endif %}

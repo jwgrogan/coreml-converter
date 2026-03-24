@@ -25,9 +25,11 @@ def mock_registry():
 
 
 @pytest.fixture
-def app(mock_registry):
+def app(mock_registry, tmp_path):
+    from coreml_converter.core.favorites import FavoritesStore
     application = create_app()
     application.state.registry = mock_registry
+    application.state.favorites = FavoritesStore(tmp_path / "favorites.json")
     return application
 
 

@@ -1,9 +1,9 @@
 {% if results %}
-<div class="grid">
+<div class="model-grid">
     {% for model in results %}
         {% include "partials/model_card.html" %}
     {% endfor %}
 </div>
 {% else %}
-<p>No results found.</p>
+<p style="text-align:center; padding:2em; color:var(--pico-muted-color);">No results found.</p>
 {% endif %}
