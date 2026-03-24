@@ -9,14 +9,14 @@ import shutil
 import uuid
 
 from fastapi import APIRouter, Request, Form, Query, UploadFile, File
-from starlette.responses import HTMLResponse
+from starlette.responses import HTMLResponse, RedirectResponse
 
 from coreml_converter.core.analyzer import check_compatibility, detect_tag_conflicts, get_recommended_weight
 from coreml_converter.core.models import (
     BaseArchitecture, BuildRecord, ConversionConfig, LoRAEntry,
     ModelInfo, ModelSource, ModelType, Recipe,
 )
-from coreml_converter.web.dependencies import templates, get_registry, get_build_store
+from coreml_converter.web.dependencies import render, get_registry, get_build_store
 
 router = APIRouter()
 _executor = ThreadPoolExecutor(max_workers=2)
@@ -29,7 +29,6 @@ _uploaded_models: dict[str, ModelInfo] = {}
 async def builder_page(request: Request, base: str = Query(default="")):
     base_model = None
     if base:
-        # Check uploaded models first
         if ":" in base:
             source_str, model_id = base.split(":", 1)
             if model_id in _uploaded_models:
@@ -47,10 +46,7 @@ async def builder_page(request: Request, base: str = Query(default="")):
                     if results:
                         base_model = results[0]
 
-    return templates.TemplateResponse("builder.html", {
-        "request": request,
-        "base_model": base_model,
-    })
+    return render(request, "builder.html", {"base_model": base_model})
 
 
 @router.get("/build/search-loras")
@@ -68,7 +64,6 @@ async def search_loras(request: Request, q: str = Query(default=""), arch: str =
         ),
     )
 
-    # Add weight recommendations
     lora_entries = []
     for model in results:
         weight, source = get_recommended_weight(model)
@@ -78,8 +73,7 @@ async def search_loras(request: Request, q: str = Query(default=""), arch: str =
             "weight_source": source,
         })
 
-    return templates.TemplateResponse("partials/search_results.html", {
-        "request": request,
+    return render(request, "partials/search_results.html", {
         "results": results,
         "lora_data": lora_entries,
     })
@@ -88,14 +82,11 @@ async def search_loras(request: Request, q: str = Query(default=""), arch: str =
 @router.post("/build/check-compatibility")
 async def check_compat(request: Request):
     form = await request.form()
-    # Parse recipe from form data
     base_json = form.get("base_model")
     loras_json = form.get("loras")
 
     if not base_json:
-        return templates.TemplateResponse("partials/compatibility_report.html", {
-            "request": request, "report": None,
-        })
+        return render(request, "partials/compatibility_report.html", {"report": None})
 
     base_model = ModelInfo(**json.loads(base_json))
     lora_entries = [LoRAEntry(**l) for l in json.loads(loras_json or "[]")]
@@ -104,9 +95,7 @@ async def check_compat(request: Request):
     tag_conflicts = detect_tag_conflicts(lora_entries)
     report.conflicts.extend(tag_conflicts)
 
-    return templates.TemplateResponse("partials/compatibility_report.html", {
-        "request": request, "report": report,
-    })
+    return render(request, "partials/compatibility_report.html", {"report": report})
 
 
 @router.post("/build/upload")
@@ -140,7 +129,7 @@ async def upload_model(
 
     local_id = f"local_{upload_id}"
     model = ModelInfo(
-        source=ModelSource.CIVITAI,  # placeholder source
+        source=ModelSource.CIVITAI,
         id=local_id,
         name=Path(file.filename).stem,
         base_architecture=arch_map.get(arch, BaseArchitecture.SD15),
@@ -150,11 +139,9 @@ async def upload_model(
         metadata={"local_path": str(dest), "uploaded": True},
     )
 
-    # Store so builder page can look it up
     _uploaded_models[local_id] = model
 
-    return templates.TemplateResponse("partials/model_card.html", {
-        "request": request,
+    return render(request, "partials/model_card.html", {
         "model": model,
         "uploaded": True,
     })
@@ -184,5 +171,4 @@ async def start_build(request: Request):
     job_manager = request.app.state.job_manager
     await job_manager.submit(record)
 
-    from starlette.responses import RedirectResponse
     return RedirectResponse(url=f"/build/{record.id}", status_code=303)

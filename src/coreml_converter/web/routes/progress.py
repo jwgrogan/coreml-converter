@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Request
 from sse_starlette.sse import EventSourceResponse
 
-from coreml_converter.web.dependencies import templates, get_build_store
+from coreml_converter.web.dependencies import render, get_build_store
 
 router = APIRouter()
 
@@ -12,11 +12,7 @@ router = APIRouter()
 async def progress_page(request: Request, job_id: str):
     build_store = get_build_store(request)
     record = build_store.get(job_id)
-    return templates.TemplateResponse("progress.html", {
-        "request": request,
-        "job_id": job_id,
-        "record": record,
-    })
+    return render(request, "progress.html", {"job_id": job_id, "record": record})
 
 
 @router.get("/build/{job_id}/events")

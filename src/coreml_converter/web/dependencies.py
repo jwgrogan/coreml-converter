@@ -4,9 +4,16 @@ from pathlib import Path
 
 from fastapi import Request
 from fastapi.templating import Jinja2Templates
+from starlette.responses import Response
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+
+
+def render(request: Request, template: str, context: dict | None = None) -> Response:
+    """Render a template with Starlette 1.0+ compatible API."""
+    ctx = context or {}
+    return templates.TemplateResponse(request, template, ctx)
 
 
 def get_registry(request: Request):
