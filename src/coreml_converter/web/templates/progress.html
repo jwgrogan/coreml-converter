@@ -1,28 +1,127 @@
 {% extends "base.html" %}
 {% block content %}
 <h1>Build Progress</h1>
+
 {% if record %}
-<article>
+<article x-data="buildProgress('{{ job_id }}')" class="build-progress">
     <h3>{{ record.recipe.name }}</h3>
-    <div id="status" hx-ext="sse" sse-connect="/build/{{ job_id }}/events" sse-swap="message">
-        <p>Status: {{ record.status.value }}</p>
+
+    <!-- Progress bar -->
+    <div class="progress-container">
+        <progress :value="percent" max="100" style="width:100%;"></progress>
+        <div class="progress-label">
+            <span x-text="percent + '%'"></span>
+            <span x-show="stepsTotal > 0" x-text="'Step ' + stepsDone + ' of ' + stepsTotal" style="float:right; font-size:0.85em; color:var(--pico-muted-color);"></span>
+        </div>
     </div>
-    {% if record.status.value == "completed" and record.result %}
-    <h4>Output</h4>
-    <ul>
-        <li>mlpackage: {{ record.result.mlpackage_path }}</li>
-        <li>mlmodelc: {{ record.result.mlmodelc_path }}</li>
-        <li>manifest: {{ record.result.manifest_path }}</li>
-        <li>Size: {{ "%.1f"|format(record.result.model_size_mb) }} MB</li>
-        <li>Time: {{ "%.1f"|format(record.result.conversion_time) }}s</li>
-    </ul>
-    {% endif %}
-    {% if record.status.value == "failed" %}
-    <p class="error">Error: {{ record.error }}</p>
-    {% endif %}
+
+    <!-- Current step -->
+    <div class="step-display">
+        <div class="step-indicator" :class="stepClass">
+            <span x-show="step === 'starting' || step === 'downloading' || step === 'merging' || step === 'converting'" aria-busy="true"></span>
+            <span x-show="step === 'completed'" style="color: var(--pico-ins-color); font-size:1.5em;">&#10003;</span>
+            <span x-show="step === 'failed'" style="color: var(--pico-del-color); font-size:1.5em;">&#10007;</span>
+        </div>
+        <p x-text="message" style="margin:0; font-size:1.1em;"></p>
+    </div>
+
+    <!-- Pipeline steps visualization -->
+    <div class="pipeline-steps">
+        <div class="pipeline-step" :class="{'active': step === 'downloading', 'done': ['merging','converting','completed'].includes(step)}">
+            <div class="pipeline-dot"></div>
+            <span>Download</span>
+        </div>
+        <div class="pipeline-line" :class="{'done': ['merging','converting','completed'].includes(step)}"></div>
+        <div class="pipeline-step" :class="{'active': step === 'merging', 'done': ['converting','completed'].includes(step)}">
+            <div class="pipeline-dot"></div>
+            <span>Merge</span>
+        </div>
+        <div class="pipeline-line" :class="{'done': ['converting','completed'].includes(step)}"></div>
+        <div class="pipeline-step" :class="{'active': step === 'converting', 'done': step === 'completed'}">
+            <div class="pipeline-dot"></div>
+            <span>Convert</span>
+        </div>
+        <div class="pipeline-line" :class="{'done': step === 'completed'}"></div>
+        <div class="pipeline-step" :class="{'done': step === 'completed'}">
+            <div class="pipeline-dot"></div>
+            <span>Done</span>
+        </div>
+    </div>
+
+    <!-- Result (shown on complete) -->
+    <template x-if="step === 'completed' && result">
+        <div class="build-result">
+            <h4>Output</h4>
+            <table>
+                <tr><td>mlpackage</td><td x-text="result.mlpackage_path"></td></tr>
+                <tr><td>mlmodelc</td><td x-text="result.mlmodelc_path"></td></tr>
+                <tr><td>manifest</td><td x-text="result.manifest_path"></td></tr>
+                <tr><td>Size</td><td x-text="(result.model_size_mb || 0).toFixed(1) + ' MB'"></td></tr>
+                <tr><td>Time</td><td x-text="(result.conversion_time || 0).toFixed(1) + 's'"></td></tr>
+            </table>
+        </div>
+    </template>
+
+    <!-- Error (shown on failure) -->
+    <template x-if="step === 'failed'">
+        <div class="build-error">
+            <p x-text="message"></p>
+        </div>
+    </template>
 </article>
 {% else %}
 <p>Job not found.</p>
 {% endif %}
-<a href="/build">Build Another</a>
+
+<div style="margin-top:1rem;">
+    <a href="/build" role="button" class="outline">Build Another</a>
+    <a href="/history" role="button" class="outline">View History</a>
+</div>
+
+<script>
+function buildProgress(jobId) {
+    return {
+        step: 'starting',
+        message: 'Starting build...',
+        percent: 0,
+        stepsDone: 0,
+        stepsTotal: 0,
+        result: null,
+        eventSource: null,
+
+        get stepClass() {
+            return {
+                'step-running': ['starting','downloading','merging','converting'].includes(this.step),
+                'step-done': this.step === 'completed',
+                'step-error': this.step === 'failed',
+            };
+        },
+
+        init() {
+            this.eventSource = new EventSource('/build/' + jobId + '/events');
+            this.eventSource.onmessage = (e) => {
+                const data = JSON.parse(e.data);
+                this.step = data.step || this.step;
+                this.message = data.message || this.message;
+                this.percent = data.percent || 0;
+                this.stepsDone = data.steps_done || 0;
+                this.stepsTotal = data.steps_total || 0;
+                if (data.result) {
+                    this.result = data.result;
+                }
+                if (data.step === 'completed' || data.step === 'failed') {
+                    this.eventSource.close();
+                }
+            };
+            this.eventSource.onerror = () => {
+                this.eventSource.close();
+            };
+        },
+
+        destroy() {
+            if (this.eventSource) this.eventSource.close();
+        }
+    };
+}
+</script>
 {% endblock %}

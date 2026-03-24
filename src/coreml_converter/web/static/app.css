@@ -141,3 +141,106 @@
     margin: 0.5rem 0;
     padding: 0.75rem;
 }
+
+/* Build progress page */
+.build-progress {
+    padding: 1.5rem;
+}
+.progress-container {
+    margin: 1rem 0;
+}
+.progress-label {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 0.25rem;
+    font-weight: 600;
+}
+.step-display {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 1rem 0;
+}
+
+/* Pipeline visualization */
+.pipeline-steps {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0;
+    margin: 1.5rem 0;
+    padding: 1rem;
+    background: var(--pico-card-background-color);
+    border-radius: 8px;
+}
+.pipeline-step {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.4rem;
+    min-width: 60px;
+}
+.pipeline-step span {
+    font-size: 0.75em;
+    color: var(--pico-muted-color);
+}
+.pipeline-dot {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: var(--pico-muted-border-color);
+    transition: all 0.3s;
+}
+.pipeline-step.active .pipeline-dot {
+    background: var(--pico-primary-background);
+    box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.2);
+}
+.pipeline-step.active span {
+    color: var(--pico-primary);
+    font-weight: 600;
+}
+.pipeline-step.done .pipeline-dot {
+    background: var(--pico-ins-color, #059669);
+}
+.pipeline-step.done span {
+    color: var(--pico-ins-color, #059669);
+}
+.pipeline-line {
+    flex: 1;
+    height: 3px;
+    background: var(--pico-muted-border-color);
+    min-width: 30px;
+    transition: background 0.3s;
+}
+.pipeline-line.done {
+    background: var(--pico-ins-color, #059669);
+}
+
+.build-result {
+    margin-top: 1rem;
+    padding: 1rem;
+    background: var(--pico-card-background-color);
+    border-radius: 8px;
+    border-left: 4px solid var(--pico-ins-color, #059669);
+}
+.build-result table {
+    margin: 0.5rem 0 0 0;
+}
+.build-result td:first-child {
+    font-weight: 600;
+    padding-right: 1rem;
+    white-space: nowrap;
+}
+.build-error {
+    margin-top: 1rem;
+    padding: 1rem;
+    border-radius: 8px;
+    border-left: 4px solid var(--pico-del-color);
+    background: var(--pico-card-background-color);
+    color: var(--pico-del-color);
+}
+
+/* Upload progress in builder */
+.upload-progress {
+    margin-top: 0.5rem;
+}

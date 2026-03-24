@@ -20,7 +20,7 @@
         <!-- Upload -->
         <details>
             <summary>Upload local model file</summary>
-            <form hx-post="/build/upload" hx-target="#upload-result" hx-encoding="multipart/form-data">
+            <form hx-post="/build/upload" hx-target="#upload-result" hx-encoding="multipart/form-data" hx-indicator="#upload-spinner">
                 <label>File (.safetensors or .ckpt)
                     <input type="file" name="file" accept=".safetensors,.ckpt,.bin" required>
                 </label>
@@ -39,6 +39,7 @@
                     </label>
                 </div>
                 <button type="submit">Upload</button>
+                <span id="upload-spinner" class="htmx-indicator" aria-busy="true"> Uploading...</span>
             </form>
             <div id="upload-result"></div>
         </details>
