@@ -12,9 +12,30 @@ from coreml_converter.core.models import (
 )
 from coreml_converter.core.state import BuildStore
 
+def _is_local_path(ref: str) -> bool:
+    """Check if ref is a local file path rather than a source:id reference."""
+    p = Path(ref)
+    return p.exists() and p.is_file()
+
+
+def _make_local_model(path: str, model_type: ModelType, arch: BaseArchitecture = BaseArchitecture.SD15) -> ModelInfo:
+    """Create a ModelInfo from a local file path."""
+    p = Path(path)
+    return ModelInfo(
+        source=ModelSource.CIVITAI,  # placeholder
+        id=f"local_{p.stem}",
+        name=p.stem,
+        base_architecture=arch,
+        model_type=model_type,
+        tags=["local"],
+        download_url="",
+        metadata={"local_path": str(p.resolve()), "uploaded": True},
+    )
+
+
 def _parse_model_ref(ref):
     if ":" not in ref:
-        raise click.BadParameter(f"Invalid model ref '{ref}'. Expected format: source:id")
+        raise click.BadParameter(f"Invalid model ref '{ref}'. Expected format: source:id or a local file path")
     source_str, model_id = ref.split(":", 1)
     source_map = {"hf": ModelSource.HUGGINGFACE, "civitai": ModelSource.CIVITAI}
     source = source_map.get(source_str.lower())
@@ -65,22 +86,43 @@ def build(base, lora, name, recipe, compute_units, attention, output):
         build_recipe = Recipe(name=manifest["name"], base_model=base_model,
             loras=lora_entries, conversion_config=conv_config)
     elif base:
-        source, model_id = _parse_model_ref(base)
-        from coreml_converter.cli.commands.search import get_registry
-        registry = get_registry()
-        results = registry.search(model_id, source=source, model_type=ModelType.CHECKPOINT, limit=1)
-        if not results:
-            console.print(f"[red]Model not found: {base}[/red]")
-            sys.exit(1)
-        base_model = results[0]
+        # Support local file paths: --base /path/to/model.safetensors
+        if _is_local_path(base):
+            base_model = _make_local_model(base, ModelType.CHECKPOINT)
+            console.print(f"[green]Using local base model:[/green] {base}")
+        else:
+            source, model_id = _parse_model_ref(base)
+            from coreml_converter.cli.commands.search import get_registry
+            registry = get_registry()
+            results = registry.search(model_id, source=source, model_type=ModelType.CHECKPOINT, limit=1)
+            if not results:
+                console.print(f"[red]Model not found: {base}[/red]")
+                sys.exit(1)
+            base_model = results[0]
+
         lora_entries = []
         for lora_ref in lora:
-            l_source, l_id, l_weight = _parse_lora_ref(lora_ref)
-            lora_results = registry.search(l_id, source=l_source, model_type=ModelType.LORA, limit=1)
-            if not lora_results:
-                console.print(f"[red]LoRA not found: {lora_ref}[/red]")
-                sys.exit(1)
-            lora_entries.append(LoRAEntry(model=lora_results[0], weight=l_weight))
+            # Support local paths: --lora /path/to/lora.safetensors@0.7
+            weight = 1.0
+            ref_part = lora_ref
+            if "@" in lora_ref:
+                ref_part, weight_str = lora_ref.rsplit("@", 1)
+                weight = float(weight_str)
+
+            if _is_local_path(ref_part):
+                lora_model = _make_local_model(ref_part, ModelType.LORA, base_model.base_architecture)
+                lora_entries.append(LoRAEntry(model=lora_model, weight=weight))
+                console.print(f"[green]Using local LoRA:[/green] {ref_part} @ {weight}")
+            else:
+                if not hasattr(locals(), 'registry'):
+                    from coreml_converter.cli.commands.search import get_registry
+                    registry = get_registry()
+                l_source, l_id, l_weight = _parse_lora_ref(lora_ref)
+                lora_results = registry.search(l_id, source=l_source, model_type=ModelType.LORA, limit=1)
+                if not lora_results:
+                    console.print(f"[red]LoRA not found: {lora_ref}[/red]")
+                    sys.exit(1)
+                lora_entries.append(LoRAEntry(model=lora_results[0], weight=l_weight))
         model_name = name or f"{base_model.name}-custom"
         conv_config = ConversionConfig(output_dir=Path(output), model_name=model_name,
             compute_units=compute_units, attention=attention)
@@ -121,13 +163,27 @@ def build(base, lora, name, recipe, compute_units, attention, output):
         task = progress.add_task("Starting build...", total=None)
         cache_dir = app_dir / "cache"
         try:
-            progress.update(task, description="Downloading base model...")
-            base_path = registry.download(build_recipe.base_model, cache_dir)
-            build_recipe.base_model.metadata["local_path"] = str(base_path)
+            # Download (skip for local files)
+            if not build_recipe.base_model.metadata.get("local_path"):
+                progress.update(task, description="Downloading base model...")
+                if 'registry' not in dir():
+                    from coreml_converter.cli.commands.search import get_registry
+                    registry = get_registry()
+                base_path = registry.download(build_recipe.base_model, cache_dir)
+                build_recipe.base_model.metadata["local_path"] = str(base_path)
+            else:
+                progress.update(task, description="Using local base model...")
+
             for entry in build_recipe.loras:
-                progress.update(task, description=f"Downloading LoRA: {entry.model.name}...")
-                lora_path = registry.download(entry.model, cache_dir)
-                entry.model.metadata["local_path"] = str(lora_path)
+                if not entry.model.metadata.get("local_path"):
+                    progress.update(task, description=f"Downloading LoRA: {entry.model.name}...")
+                    if 'registry' not in dir():
+                        from coreml_converter.cli.commands.search import get_registry
+                        registry = get_registry()
+                    lora_path = registry.download(entry.model, cache_dir)
+                    entry.model.metadata["local_path"] = str(lora_path)
+                else:
+                    progress.update(task, description=f"Using local LoRA: {entry.model.name}...")
 
             # Post-download validation
             from coreml_converter.core.analyzer import validate_lora_dimensions, detect_weight_overlap

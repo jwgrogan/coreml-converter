@@ -5,7 +5,11 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from fastapi import APIRouter, Request, Form, Query
+import shutil
+import uuid
+
+from fastapi import APIRouter, Request, Form, Query, UploadFile, File
+from starlette.responses import HTMLResponse
 
 from coreml_converter.core.analyzer import check_compatibility, detect_tag_conflicts, get_recommended_weight
 from coreml_converter.core.models import (
@@ -94,6 +98,53 @@ async def check_compat(request: Request):
 
     return templates.TemplateResponse("partials/compatibility_report.html", {
         "request": request, "report": report,
+    })
+
+
+@router.post("/build/upload")
+async def upload_model(
+    request: Request,
+    file: UploadFile = File(...),
+    model_type: str = Form("checkpoint"),
+    arch: str = Form("SD1.5"),
+):
+    """Upload a local .safetensors/.ckpt file as a base model or LoRA."""
+    from coreml_converter.core.config import get_app_dir
+
+    if not file.filename:
+        return HTMLResponse("<p class='error'>No file selected</p>", status_code=400)
+
+    allowed_exts = {".safetensors", ".ckpt", ".bin"}
+    ext = Path(file.filename).suffix.lower()
+    if ext not in allowed_exts:
+        return HTMLResponse(f"<p class='error'>Unsupported format: {ext}. Use .safetensors, .ckpt, or .bin</p>", status_code=400)
+
+    cache_dir = get_app_dir() / "cache" / "uploads"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    upload_id = str(uuid.uuid4())[:8]
+    dest = cache_dir / f"{upload_id}_{file.filename}"
+
+    with open(dest, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+
+    arch_map = {"SD1.5": BaseArchitecture.SD15, "SD2.0": BaseArchitecture.SD20}
+    mt = ModelType.CHECKPOINT if model_type == "checkpoint" else ModelType.LORA
+
+    model = ModelInfo(
+        source=ModelSource.CIVITAI,  # placeholder source
+        id=f"local_{upload_id}",
+        name=Path(file.filename).stem,
+        base_architecture=arch_map.get(arch, BaseArchitecture.SD15),
+        model_type=mt,
+        tags=["uploaded"],
+        download_url="",
+        metadata={"local_path": str(dest), "uploaded": True},
+    )
+
+    return templates.TemplateResponse("partials/model_card.html", {
+        "request": request,
+        "model": model,
+        "uploaded": True,
     })
 
 

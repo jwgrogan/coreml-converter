@@ -9,10 +9,39 @@
             <article>
                 <h4>{{ base_model.name }}</h4>
                 <span class="badge">{{ base_model.base_architecture.value }}</span>
+                {% if base_model.metadata.get("uploaded") %}
+                    <span class="badge">uploaded</span>
+                {% endif %}
             </article>
         {% else %}
-            <p>Select a base model from <a href="/">Search</a>.</p>
+            <p>Select a base model from <a href="/">Search</a>, or upload one below.</p>
         {% endif %}
+
+        <!-- Upload -->
+        <details>
+            <summary>Upload local model file</summary>
+            <form hx-post="/build/upload" hx-target="#upload-result" hx-encoding="multipart/form-data">
+                <label>File (.safetensors or .ckpt)
+                    <input type="file" name="file" accept=".safetensors,.ckpt,.bin" required>
+                </label>
+                <div class="grid">
+                    <label>Type
+                        <select name="model_type">
+                            <option value="checkpoint">Checkpoint (Base Model)</option>
+                            <option value="lora">LoRA</option>
+                        </select>
+                    </label>
+                    <label>Architecture
+                        <select name="arch">
+                            <option value="SD1.5">SD 1.5</option>
+                            <option value="SD2.0">SD 2.0</option>
+                        </select>
+                    </label>
+                </div>
+                <button type="submit">Upload</button>
+            </form>
+            <div id="upload-result"></div>
+        </details>
     </div>
 
     <!-- LoRA Search -->
@@ -25,6 +54,8 @@
                hx-target="#lora-results"
                name="q">
         <div id="lora-results"></div>
+        {% else %}
+        <p>Select or upload a base model first.</p>
         {% endif %}
     </div>
 </div>

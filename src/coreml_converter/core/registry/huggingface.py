@@ -13,16 +13,28 @@ _ARCH_TAG_MAP = {
     "sd-2.1": BaseArchitecture.SD20,
 }
 
+# Infer arch from diffusers pipeline tags
+_PIPELINE_ARCH_MAP = {
+    "diffusers:StableDiffusionPipeline": BaseArchitecture.SD15,
+    "diffusers:StableDiffusionImg2ImgPipeline": BaseArchitecture.SD15,
+    "diffusers:StableDiffusionInpaintPipeline": BaseArchitecture.SD15,
+}
+
 
 class HuggingFaceClient(RegistryClient):
     def __init__(self) -> None:
         self._api = HfApi()
 
     def _infer_architecture(self, tags: list[str]) -> BaseArchitecture | None:
+        # Check explicit architecture tags first
         for tag in tags:
             tag_lower = tag.lower()
             if tag_lower in _ARCH_TAG_MAP:
                 return _ARCH_TAG_MAP[tag_lower]
+        # Fall back to diffusers pipeline tags
+        for tag in tags:
+            if tag in _PIPELINE_ARCH_MAP:
+                return _PIPELINE_ARCH_MAP[tag]
         return None
 
     def _infer_model_type(self, tags: list[str]) -> ModelType:
@@ -35,7 +47,7 @@ class HuggingFaceClient(RegistryClient):
                base_arch: BaseArchitecture | None = None, limit: int = 20) -> list[ModelInfo]:
         models = self._api.list_models(
             search=query, pipeline_tag="text-to-image",
-            sort="downloads", direction=-1, limit=limit * 3,
+            sort="downloads", limit=limit * 3,
         )
         results: list[ModelInfo] = []
         for m in models:
