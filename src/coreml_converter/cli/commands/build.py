@@ -108,6 +108,15 @@ def build(base, lora, name, recipe, compute_units, attention, output):
     record = BuildRecord(recipe=build_recipe)
     store.save(record)
 
+    # Pre-flight disk space check
+    from coreml_converter.core.converter.converter import check_disk_space
+    try:
+        check_disk_space(Path(output))
+    except RuntimeError as e:
+        console.print(f"[red]{e}[/red]")
+        if not click.confirm("Continue anyway?"):
+            sys.exit(1)
+
     with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), console=console) as progress:
         task = progress.add_task("Starting build...", total=None)
         cache_dir = app_dir / "cache"
@@ -119,6 +128,23 @@ def build(base, lora, name, recipe, compute_units, attention, output):
                 progress.update(task, description=f"Downloading LoRA: {entry.model.name}...")
                 lora_path = registry.download(entry.model, cache_dir)
                 entry.model.metadata["local_path"] = str(lora_path)
+
+            # Post-download validation
+            from coreml_converter.core.analyzer import validate_lora_dimensions, detect_weight_overlap
+            for entry in build_recipe.loras:
+                lora_path = Path(entry.model.metadata["local_path"])
+                if lora_path.suffix == ".safetensors":
+                    dim_result = validate_lora_dimensions(lora_path, build_recipe.base_model.base_architecture)
+                    if not dim_result.compatible:
+                        console.print(f"[red]Dimension mismatch for {entry.model.name}: expected {dim_result.expected}, got {dim_result.actual}[/red]")
+                        if not click.confirm("Continue anyway?"):
+                            sys.exit(1)
+
+            if len(build_recipe.loras) >= 2:
+                lora_pairs = [(e.model.name, Path(e.model.metadata["local_path"])) for e in build_recipe.loras]
+                overlap_conflicts = detect_weight_overlap(lora_pairs)
+                for c in overlap_conflicts:
+                    console.print(f"[yellow]Weight overlap: {c.reason}[/yellow]")
             progress.update(task, description="Merging LoRAs into base model...")
             from coreml_converter.core.merger.merger import Merger
             merger = Merger()

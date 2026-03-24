@@ -22,16 +22,33 @@ def get_progress_queue(job_id: str) -> queue.Queue:
     return _progress_queues[job_id]
 
 
-def _run_build(record_dict: dict, cache_dir: str, output_dir: str) -> dict:
+def _run_build(record_dict: dict, cache_dir: str, output_dir: str, civitai_api_key: str | None = None) -> dict:
     """Runs in a separate process."""
     from coreml_converter.core.models import BuildRecord, BuildStatus
     from coreml_converter.core.merger.merger import Merger
     from coreml_converter.core.converter.converter import Converter
+    from coreml_converter.core.registry import Registry
+    from coreml_converter.core.registry.huggingface import HuggingFaceClient
+    from coreml_converter.core.registry.civitai import CivitAIClient
 
     record = BuildRecord(**record_dict)
     recipe = record.recipe
 
     try:
+        # Download models
+        registry = Registry(
+            hf_client=HuggingFaceClient(),
+            civitai_client=CivitAIClient(api_key=civitai_api_key),
+        )
+        cache = Path(cache_dir)
+        base_path = registry.download(recipe.base_model, cache)
+        recipe.base_model.metadata["local_path"] = str(base_path)
+
+        for entry in recipe.loras:
+            lora_path = registry.download(entry.model, cache)
+            entry.model.metadata["local_path"] = str(lora_path)
+
+        # Merge + Convert
         merger = Merger()
         merged_path = merger.merge(recipe, Path(cache_dir), Path(output_dir))
 
@@ -56,7 +73,7 @@ class JobManager:
         self._store = build_store
         self._executor = ProcessPoolExecutor(max_workers=1)
 
-    async def submit(self, record: BuildRecord) -> str:
+    async def submit(self, record: BuildRecord, civitai_api_key: str | None = None) -> str:
         record.status = BuildStatus.RUNNING
         record.started_at = datetime.now(timezone.utc)
         self._store.save(record)
@@ -72,6 +89,7 @@ class JobManager:
             record_dict,
             str(self._cache_dir),
             output_dir,
+            civitai_api_key,
         )
 
         async def _on_complete(fut):
