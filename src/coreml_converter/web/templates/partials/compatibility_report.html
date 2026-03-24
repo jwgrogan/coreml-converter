@@ -1,0 +1,15 @@
+{% if report %}
+<article>
+    <h4>Compatibility Report</h4>
+    <p>
+        Architecture: {% if report.architecture_match %}OK{% else %}MISMATCH{% endif %}
+        | Risk: <strong>{{ report.overall_risk.value }}</strong>
+    </p>
+    {% if report.lora_count_warning %}
+        <p class="warning">{{ report.lora_count_warning }}</p>
+    {% endif %}
+    {% for conflict in report.conflicts %}
+        <p class="{{ conflict.severity.value }}">{{ conflict.reason }}</p>
+    {% endfor %}
+</article>
+{% endif %}

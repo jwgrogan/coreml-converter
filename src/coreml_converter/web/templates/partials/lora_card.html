@@ -1,0 +1,14 @@
+<article class="lora-card" draggable="true">
+    <h5>{{ lora.model.name }}</h5>
+    <label>
+        Weight: <span x-text="weight">{{ lora.weight }}</span>
+        <input type="range" min="0" max="1" step="0.05"
+               x-model="weight" value="{{ lora.weight }}">
+    </label>
+    {% if lora.recommended_weight %}
+    <small>Recommended: {{ lora.recommended_weight }}
+        {% if lora.weight_source %}({{ lora.weight_source }}){% endif %}
+    </small>
+    {% endif %}
+    <button @click="removeLora('{{ lora.model.id }}')">Remove</button>
+</article>

@@ -1,5 +1,28 @@
 {% extends "base.html" %}
 {% block content %}
 <h1>Build Progress</h1>
-<p>Job: {{ job_id }} — coming soon.</p>
+{% if record %}
+<article>
+    <h3>{{ record.recipe.name }}</h3>
+    <div id="status" hx-ext="sse" sse-connect="/build/{{ job_id }}/events" sse-swap="message">
+        <p>Status: {{ record.status.value }}</p>
+    </div>
+    {% if record.status.value == "completed" and record.result %}
+    <h4>Output</h4>
+    <ul>
+        <li>mlpackage: {{ record.result.mlpackage_path }}</li>
+        <li>mlmodelc: {{ record.result.mlmodelc_path }}</li>
+        <li>manifest: {{ record.result.manifest_path }}</li>
+        <li>Size: {{ "%.1f"|format(record.result.model_size_mb) }} MB</li>
+        <li>Time: {{ "%.1f"|format(record.result.conversion_time) }}s</li>
+    </ul>
+    {% endif %}
+    {% if record.status.value == "failed" %}
+    <p class="error">Error: {{ record.error }}</p>
+    {% endif %}
+</article>
+{% else %}
+<p>Job not found.</p>
+{% endif %}
+<a href="/build">Build Another</a>
 {% endblock %}

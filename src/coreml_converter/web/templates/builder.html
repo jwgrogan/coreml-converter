@@ -1,5 +1,45 @@
 {% extends "base.html" %}
 {% block content %}
 <h1>Model Builder</h1>
-<p>Builder UI — coming soon.</p>
+<div x-data="builder()" class="grid">
+    <!-- Base Model -->
+    <div>
+        <h3>Base Model</h3>
+        {% if base_model %}
+            <article>
+                <h4>{{ base_model.name }}</h4>
+                <span class="badge">{{ base_model.base_architecture.value }}</span>
+            </article>
+        {% else %}
+            <p>Select a base model from <a href="/">Search</a>.</p>
+        {% endif %}
+    </div>
+
+    <!-- LoRA Search -->
+    <div>
+        <h3>Add LoRAs</h3>
+        {% if base_model %}
+        <input type="search" placeholder="Search compatible LoRAs..."
+               hx-get="/build/search-loras?arch={{ base_model.base_architecture.value }}"
+               hx-trigger="keyup changed delay:500ms"
+               hx-target="#lora-results"
+               name="q">
+        <div id="lora-results"></div>
+        {% endif %}
+    </div>
+</div>
+
+{% if base_model %}
+<!-- Recipe & Compatibility -->
+<div id="recipe-panel">
+    <h3>Recipe</h3>
+    <div id="lora-list">
+        <p>No LoRAs added yet.</p>
+    </div>
+    <div id="compatibility-report"></div>
+    <button hx-post="/build/start" hx-include="#build-form">Convert to CoreML</button>
+</div>
+{% endif %}
+
+<script src="/static/builder.js"></script>
 {% endblock %}
