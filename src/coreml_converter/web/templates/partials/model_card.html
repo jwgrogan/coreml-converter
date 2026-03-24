@@ -1,0 +1,16 @@
+<article>
+    <header>
+        <span class="badge">{{ model.source.value }}</span>
+        <span class="badge">{{ model.base_architecture.value }}</span>
+        <span class="badge">{{ model.model_type.value }}</span>
+    </header>
+    <h4>{{ model.name }}</h4>
+    <p>{{ model.tags[:5] | join(", ") }}</p>
+    <footer>
+        {% if model.model_type.value == "checkpoint" %}
+            <a href="/build?base={{ model.source.value }}:{{ model.id }}" role="button">Use as Base</a>
+        {% else %}
+            <small>{{ model.source.value }}:{{ model.id }}</small>
+        {% endif %}
+    </footer>
+</article>

@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Build History</h1>
+{% if builds %}
+<p>{{ builds | length }} builds</p>
+{% else %}
+<p>No builds yet.</p>
+{% endif %}
+{% endblock %}

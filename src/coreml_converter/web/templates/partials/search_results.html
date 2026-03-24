@@ -1,0 +1,9 @@
+{% if results %}
+<div class="grid">
+    {% for model in results %}
+        {% include "partials/model_card.html" %}
+    {% endfor %}
+</div>
+{% else %}
+<p>No results found.</p>
+{% endif %}

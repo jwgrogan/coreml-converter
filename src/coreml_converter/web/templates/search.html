@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Search Models</h1>
+<form hx-get="/search" hx-target="#search-results" hx-trigger="submit">
+    <div class="grid">
+        <input type="search" name="q" placeholder="Search models..." autofocus>
+        <select name="source">
+            <option value="all">All Sources</option>
+            <option value="hf">HuggingFace</option>
+            <option value="civitai">CivitAI</option>
+        </select>
+        <select name="type">
+            <option value="">All Types</option>
+            <option value="checkpoint">Checkpoint</option>
+            <option value="lora">LoRA</option>
+        </select>
+        <select name="arch">
+            <option value="">All Architectures</option>
+            <option value="sd1.5">SD 1.5</option>
+            <option value="sd2.0">SD 2.0</option>
+        </select>
+        <button type="submit">Search</button>
+    </div>
+</form>
+<div id="search-results">
+    {% if results is not none %}
+        {% include "partials/search_results.html" %}
+    {% endif %}
+</div>
+{% endblock %}

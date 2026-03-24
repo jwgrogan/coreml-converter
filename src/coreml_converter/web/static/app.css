@@ -1,0 +1,10 @@
+/* src/coreml_converter/web/static/app.css */
+.badge {
+    display: inline-block;
+    padding: 0.15em 0.5em;
+    font-size: 0.75em;
+    border-radius: 4px;
+    background: var(--pico-primary-background);
+    color: var(--pico-primary-inverse);
+    margin-right: 0.25em;
+}
