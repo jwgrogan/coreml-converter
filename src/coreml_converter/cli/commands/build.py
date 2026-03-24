@@ -1,13 +1,144 @@
+from __future__ import annotations
+import json
+import sys
+from pathlib import Path
 import click
+from rich.progress import Progress, SpinnerColumn, TextColumn
+from coreml_converter.cli.formatting import console
+from coreml_converter.core.config import get_app_dir, load_config
+from coreml_converter.core.models import (
+    BaseArchitecture, BuildRecord, BuildStatus, ConversionConfig,
+    LoRAEntry, ModelInfo, ModelSource, ModelType, Recipe,
+)
+from coreml_converter.core.state import BuildStore
+
+def _parse_model_ref(ref):
+    if ":" not in ref:
+        raise click.BadParameter(f"Invalid model ref '{ref}'. Expected format: source:id")
+    source_str, model_id = ref.split(":", 1)
+    source_map = {"hf": ModelSource.HUGGINGFACE, "civitai": ModelSource.CIVITAI}
+    source = source_map.get(source_str.lower())
+    if source is None:
+        raise click.BadParameter(f"Unknown source '{source_str}'. Use 'hf' or 'civitai'.")
+    return source, model_id
+
+def _parse_lora_ref(ref):
+    weight = 1.0
+    if "@" in ref:
+        ref, weight_str = ref.rsplit("@", 1)
+        weight = float(weight_str)
+    source, model_id = _parse_model_ref(ref)
+    return source, model_id, weight
 
 @click.command()
-@click.option("--base", default=None)
-@click.option("--lora", multiple=True)
-@click.option("--name", default=None)
-@click.option("--recipe", default=None, type=click.Path(exists=True))
-@click.option("--compute-units", default="all")
-@click.option("--attention", default="split_einsum")
+@click.option("--base", default=None, help="Base model (source:id)")
+@click.option("--lora", multiple=True, help="LoRA (source:id@weight), repeatable")
+@click.option("--name", default=None, help="Output model name")
+@click.option("--recipe", default=None, type=click.Path(exists=True), help="Recipe JSON file")
+@click.option("--compute-units", default="all", type=click.Choice(["all", "cpuAndGPU"]))
+@click.option("--attention", default="split_einsum", type=click.Choice(["split_einsum", "original"]))
 @click.option("--output", default="./output", type=click.Path())
 def build(base, lora, name, recipe, compute_units, attention, output):
     """Build a CoreML model from base + LoRAs."""
-    click.echo("Build command — not yet implemented")
+    app_dir = get_app_dir()
+    config = load_config(app_dir / "config.json")
+
+    if recipe:
+        manifest = json.loads(Path(recipe).read_text())
+        console.print(f"[green]Rebuilding from recipe:[/green] {manifest['name']}")
+        base_data = manifest["base_model"]
+        base_model = ModelInfo(source=ModelSource(base_data["source"]), id=base_data["id"],
+            name=base_data["name"], base_architecture=BaseArchitecture(base_data["architecture"]),
+            model_type=ModelType.CHECKPOINT, tags=[], download_url="", metadata={})
+        lora_entries = []
+        for l in manifest.get("loras", []):
+            lora_model = ModelInfo(source=ModelSource(l["source"]), id=l["id"], name=l["name"],
+                base_architecture=base_model.base_architecture, model_type=ModelType.LORA,
+                tags=[], download_url="", metadata={})
+            lora_entries.append(LoRAEntry(model=lora_model, weight=l["weight"]))
+        conv_data = manifest.get("conversion", {})
+        conv_config = ConversionConfig(output_dir=Path(output), model_name=manifest["name"],
+            compute_units=conv_data.get("compute_units", "all"),
+            attention=conv_data.get("attention", "split_einsum"),
+            precision=conv_data.get("precision", "float16"),
+            include_safety_checker=conv_data.get("include_safety_checker", False))
+        build_recipe = Recipe(name=manifest["name"], base_model=base_model,
+            loras=lora_entries, conversion_config=conv_config)
+    elif base:
+        source, model_id = _parse_model_ref(base)
+        from coreml_converter.cli.commands.search import get_registry
+        registry = get_registry()
+        results = registry.search(model_id, source=source, model_type=ModelType.CHECKPOINT, limit=1)
+        if not results:
+            console.print(f"[red]Model not found: {base}[/red]")
+            sys.exit(1)
+        base_model = results[0]
+        lora_entries = []
+        for lora_ref in lora:
+            l_source, l_id, l_weight = _parse_lora_ref(lora_ref)
+            lora_results = registry.search(l_id, source=l_source, model_type=ModelType.LORA, limit=1)
+            if not lora_results:
+                console.print(f"[red]LoRA not found: {lora_ref}[/red]")
+                sys.exit(1)
+            lora_entries.append(LoRAEntry(model=lora_results[0], weight=l_weight))
+        model_name = name or f"{base_model.name}-custom"
+        conv_config = ConversionConfig(output_dir=Path(output), model_name=model_name,
+            compute_units=compute_units, attention=attention)
+        build_recipe = Recipe(name=model_name, base_model=base_model,
+            loras=lora_entries, conversion_config=conv_config)
+    else:
+        console.print("[yellow]Interactive build mode not yet implemented. Use --base or --recipe.[/yellow]")
+        sys.exit(1)
+
+    from coreml_converter.core.analyzer import check_compatibility, detect_tag_conflicts
+    report = check_compatibility(base_model, list(build_recipe.loras))
+    if not report.is_compatible:
+        console.print("[red]Compatibility check failed:[/red]")
+        for c in report.conflicts:
+            console.print(f"  - {c.reason}")
+        if not click.confirm("Continue anyway?"):
+            sys.exit(1)
+    if report.lora_count_warning:
+        console.print(f"[yellow]Warning: {report.lora_count_warning}[/yellow]")
+    tag_conflicts = detect_tag_conflicts(build_recipe.loras)
+    for c in tag_conflicts:
+        console.print(f"[yellow]Conflict: {c.reason} ({c.severity.value})[/yellow]")
+
+    store = BuildStore(app_dir / "builds.json")
+    record = BuildRecord(recipe=build_recipe)
+    store.save(record)
+
+    with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), console=console) as progress:
+        task = progress.add_task("Starting build...", total=None)
+        cache_dir = app_dir / "cache"
+        try:
+            progress.update(task, description="Downloading base model...")
+            base_path = registry.download(build_recipe.base_model, cache_dir)
+            build_recipe.base_model.metadata["local_path"] = str(base_path)
+            for entry in build_recipe.loras:
+                progress.update(task, description=f"Downloading LoRA: {entry.model.name}...")
+                lora_path = registry.download(entry.model, cache_dir)
+                entry.model.metadata["local_path"] = str(lora_path)
+            progress.update(task, description="Merging LoRAs into base model...")
+            from coreml_converter.core.merger.merger import Merger
+            merger = Merger()
+            merged_path = merger.merge(build_recipe, cache_dir, Path(output))
+            progress.update(task, description="Converting to CoreML...")
+            from coreml_converter.core.converter.converter import Converter
+            converter = Converter()
+            result = converter.convert(merged_path, build_recipe)
+            record.status = BuildStatus.COMPLETED
+            record.result = result
+            store.save(record)
+            console.print(f"\n[green]Build complete![/green]")
+            console.print(f"  mlpackage: {result.mlpackage_path}")
+            console.print(f"  mlmodelc:  {result.mlmodelc_path}")
+            console.print(f"  manifest:  {result.manifest_path}")
+            console.print(f"  size:      {result.model_size_mb:.1f} MB")
+            console.print(f"  time:      {result.conversion_time:.1f}s")
+        except Exception as e:
+            record.status = BuildStatus.FAILED
+            record.error = str(e)
+            store.save(record)
+            console.print(f"[red]Build failed: {e}[/red]")
+            sys.exit(1)
