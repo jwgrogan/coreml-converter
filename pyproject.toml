@@ -22,7 +22,8 @@ dependencies = [
 
 [project.optional-dependencies]
 ml = [
-    "torch>=2.0",
+    "torch>=2.7,<2.8",
+    "numpy<2.0",
     "diffusers>=0.25",
     "transformers>=4.35",
     "safetensors>=0.4",

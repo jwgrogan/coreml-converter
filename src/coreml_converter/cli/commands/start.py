@@ -95,8 +95,8 @@ def start(port: int, no_serve: bool):
         # Install individually to avoid the apple git dep build issues
         ml_result = subprocess.run(
             [str(venv_pip), "install", "--quiet",
-             "torch>=2.0", "diffusers>=0.25", "transformers>=4.35",
-             "safetensors>=0.4", "coremltools>=7.0"],
+             "torch>=2.7,<2.8", "diffusers>=0.25", "transformers>=4.35",
+             "safetensors>=0.4", "coremltools>=7.0", "numpy<2.0"],
             capture_output=True, text=True,
         )
         if ml_result.returncode != 0:
