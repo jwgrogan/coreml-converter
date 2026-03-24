@@ -86,5 +86,55 @@ async def add_favorite(request: Request, model_json: str = Form(...)):
 async def remove_favorite(request: Request, source: str = Form(...), model_id: str = Form(...)):
     favorites = _get_favorites(request)
     favorites.remove(source, model_id)
-    # Return a minimal card placeholder or updated button
     return HTMLResponse('<span class="badge unfaved">Removed</span>')
+
+
+@router.get("/import/civitai")
+async def import_civitai_page(request: Request):
+    """Show CivitAI collections available for import."""
+    registry = get_registry(request)
+    civitai_client = registry._clients.get(ModelSource.CIVITAI)
+
+    collections = []
+    error = None
+    if civitai_client and hasattr(civitai_client, "get_collections"):
+        try:
+            loop = asyncio.get_event_loop()
+            collections = await loop.run_in_executor(
+                _executor, civitai_client.get_collections
+            )
+        except Exception as e:
+            error = str(e)
+    else:
+        error = "CivitAI API key not configured. Run: coreml-converter config set civitai-key YOUR_KEY"
+
+    return render(request, "import_civitai.html", {
+        "collections": collections,
+        "error": error,
+    })
+
+
+@router.post("/import/civitai/{collection_id}")
+async def import_collection(request: Request, collection_id: int):
+    """Import all models from a CivitAI collection into favorites."""
+    registry = get_registry(request)
+    favorites = _get_favorites(request)
+    civitai_client = registry._clients.get(ModelSource.CIVITAI)
+
+    if not civitai_client or not hasattr(civitai_client, "get_collection_items"):
+        return HTMLResponse("<p class='error'>CivitAI not configured</p>", status_code=400)
+
+    loop = asyncio.get_event_loop()
+    models = await loop.run_in_executor(
+        _executor,
+        lambda: civitai_client.get_collection_items(collection_id),
+    )
+
+    imported = 0
+    for model in models:
+        favorites.add(model)
+        imported += 1
+
+    return HTMLResponse(
+        f'<p style="color:var(--pico-ins-color);">Imported {imported} model(s) to favorites.</p>'
+    )

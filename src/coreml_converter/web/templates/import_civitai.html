@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Import from CivitAI</h1>
+<p>Import your CivitAI collections (liked models, bookmarks) into your local favorites.</p>
+
+{% if error %}
+<article style="border-left: 3px solid var(--pico-del-color); padding: 1rem;">
+    <p>{{ error }}</p>
+</article>
+{% elif collections %}
+<div class="model-grid">
+    {% for coll in collections %}
+    <article class="model-card" style="padding: 1rem;">
+        <div class="model-card-body">
+            <h4 class="model-card-title">{{ coll.name }}</h4>
+            <div class="model-card-badges">
+                <span class="badge badge-type">{{ coll.type or "Collection" }}</span>
+                {% if coll.mode %}
+                <span class="badge badge-arch">{{ coll.mode }}</span>
+                {% endif %}
+            </div>
+            {% if coll.description %}
+            <p class="model-card-desc">{{ coll.description }}</p>
+            {% endif %}
+        </div>
+        <div class="model-card-actions">
+            <button hx-post="/import/civitai/{{ coll.id }}"
+                    hx-target="#import-result-{{ coll.id }}"
+                    hx-indicator="#spinner-{{ coll.id }}"
+                    class="btn-select">
+                Import to Favorites
+            </button>
+            <span id="spinner-{{ coll.id }}" class="htmx-indicator" aria-busy="true">Importing...</span>
+        </div>
+        <div id="import-result-{{ coll.id }}" style="padding: 0 1rem 0.5rem;"></div>
+    </article>
+    {% endfor %}
+</div>
+{% else %}
+<p>No collections found. Like or bookmark models on CivitAI first, then import them here.</p>
+{% endif %}
+
+<a href="/favorites" role="button" class="outline" style="margin-top:1rem;">View Favorites</a>
+{% endblock %}

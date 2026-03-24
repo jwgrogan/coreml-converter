@@ -4,6 +4,7 @@
     <h1>{% if show_favorites %}Favorites{% else %}Search Models{% endif %}</h1>
     <div>
         {% if show_favorites %}
+            <a href="/import/civitai" role="button" class="outline" style="margin-right:0.5rem;">Import from CivitAI</a>
             <a href="/" role="button" class="outline">Back to Search</a>
         {% else %}
             <a href="/favorites" role="button" class="outline">View Favorites</a>

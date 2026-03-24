@@ -145,6 +145,46 @@ class CivitAIClient(RegistryClient):
             },
         )
 
+    def get_collections(self) -> list[dict]:
+        """Get all CivitAI collections for the authenticated user."""
+        self._rate_limiter.acquire()
+        import json as _json
+        resp = self._client.get(
+            "https://civitai.com/api/trpc/collection.getAllUser",
+            params={"input": _json.dumps({"json": {}})},
+            headers=self._headers(),
+        )
+        resp.raise_for_status()
+        return resp.json().get("result", {}).get("data", {}).get("json", [])
+
+    def get_collection_items(self, collection_id: int, limit: int = 50) -> list[ModelInfo]:
+        """Get model items from a CivitAI collection, resolving each to ModelInfo."""
+        self._rate_limiter.acquire()
+        import json as _json
+        resp = self._client.get(
+            "https://civitai.com/api/trpc/collection.getById",
+            params={"input": _json.dumps({"json": {"id": collection_id}})},
+            headers=self._headers(),
+        )
+        resp.raise_for_status()
+        collection = resp.json().get("result", {}).get("data", {}).get("json", {}).get("collection", {})
+
+        # Collection items are fetched via the model IDs stored in the collection
+        # The trpc endpoint returns metadata; items need individual resolution
+        items = collection.get("items", [])
+
+        results: list[ModelInfo] = []
+        for item in items[:limit]:
+            model_id = item.get("modelId") or item.get("id")
+            if not model_id:
+                continue
+            model = self.get_by_id(str(model_id))
+            if model:
+                results.append(model)
+
+        # If no items via that path, the collection might be empty or use a different structure
+        return results
+
     def get_compatible_loras(self, base_model: ModelInfo, limit: int = 20) -> list[ModelInfo]:
         return self.search(query="", model_type=ModelType.LORA,
                           base_arch=base_model.base_architecture, limit=limit)
