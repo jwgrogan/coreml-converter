@@ -16,6 +16,8 @@ CIVITAI_API = "https://civitai.com/api/v1"
 _BASE_MODEL_MAP = {
     "SD 1.4": BaseArchitecture.SD15,
     "SD 1.5": BaseArchitecture.SD15,
+    "SD 1.5 LCM": BaseArchitecture.SD15,
+    "SD 1.5 Hyper": BaseArchitecture.SD15,
     "SD 2.0": BaseArchitecture.SD20,
     "SD 2.1": BaseArchitecture.SD20,
 }
@@ -47,8 +49,13 @@ class CivitAIClient(RegistryClient):
     def search(self, query: str, model_type: ModelType | None = None,
                base_arch: BaseArchitecture | None = None, limit: int = 20) -> list[ModelInfo]:
         self._rate_limiter.acquire()
-        params: dict = {"query": query, "limit": limit, "sort": "Most Downloaded"}
-        if model_type:
+        # CivitAI API has a bug: combining query + types returns 0 results.
+        # When query is provided, we omit the types param and filter client-side.
+        params: dict = {"limit": limit * 3, "sort": "Most Downloaded"}
+        if query:
+            params["query"] = query
+        elif model_type:
+            # Only use server-side type filter when there's no query
             civitai_type = {ModelType.CHECKPOINT: "Checkpoint", ModelType.LORA: "LORA"}
             params["types"] = civitai_type.get(model_type, "Checkpoint")
         resp = self._client.get(f"{CIVITAI_API}/models", params=params, headers=self._headers())
@@ -59,18 +66,31 @@ class CivitAIClient(RegistryClient):
             mt = self._parse_civitai_type(item.get("type", ""))
             if mt is None:
                 continue
+            if model_type and mt != model_type:
+                continue
             versions = item.get("modelVersions", [])
             if not versions:
                 continue
-            version = versions[0]
-            arch = self._parse_base_model(version.get("baseModel", ""))
-            if arch is None:
+            # Find the first version with a compatible base model
+            version = None
+            arch = None
+            files = []
+            for v in versions:
+                a = self._parse_base_model(v.get("baseModel", ""))
+                if a is None:
+                    continue
+                if base_arch and a != base_arch:
+                    continue
+                f = [f for f in v.get("files", []) if f.get("type") == "Model"]
+                if f:
+                    version = v
+                    arch = a
+                    files = f
+                    break
+            if version is None or arch is None:
                 continue
-            if base_arch and arch != base_arch:
-                continue
-            files = [f for f in version.get("files", []) if f.get("type") == "Model"]
-            if not files:
-                continue
+            if len(results) >= limit:
+                break
             results.append(ModelInfo(
                 source=ModelSource.CIVITAI, id=str(item["id"]), name=item["name"],
                 base_architecture=arch, model_type=mt, tags=item.get("tags", []),
