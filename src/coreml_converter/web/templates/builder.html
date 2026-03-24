@@ -88,14 +88,10 @@
         <input type="text" x-model="modelName" placeholder="my-custom-model">
     </label>
 
-    <button @click="startBuild()" :disabled="!baseModel.id">Convert to CoreML</button>
-
-    <!-- Hidden form for htmx submission -->
-    <form id="build-form" x-ref="buildForm" method="post" action="/build/start" style="display:none;">
-        <input type="hidden" name="base_model" :value="JSON.stringify(baseModel)">
-        <input type="hidden" name="loras" :value="JSON.stringify(loras)">
-        <input type="hidden" name="name" :value="modelName">
-    </form>
+    <button @click="startBuild()" :disabled="!baseModel.id || building" :aria-busy="building">
+        <span x-show="!building">Convert to CoreML</span>
+        <span x-show="building">Starting build...</span>
+    </button>
 </div>
 {% endif %}
 

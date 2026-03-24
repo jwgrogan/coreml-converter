@@ -169,6 +169,9 @@ async def start_build(request: Request):
     build_store.save(record)
 
     job_manager = request.app.state.job_manager
-    await job_manager.submit(record)
+    # Pass API key so the build thread can download models
+    from coreml_converter.core.config import get_app_dir, load_config
+    config = load_config(get_app_dir() / "config.json")
+    await job_manager.submit(record, civitai_api_key=config.civitai_api_key)
 
     return RedirectResponse(url=f"/build/{record.id}", status_code=303)
