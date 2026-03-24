@@ -2,8 +2,26 @@
 {% block content %}
 <h1>Build History</h1>
 {% if builds %}
-<p>{{ builds | length }} builds</p>
+{% for build in builds %}
+<article>
+    <header>
+        <span class="badge">{{ build.status.value }}</span>
+        <strong>{{ build.recipe.name }}</strong>
+    </header>
+    <p>Base: {{ build.recipe.base_model.name }} ({{ build.recipe.base_model.base_architecture.value }})</p>
+    <p>LoRAs: {{ build.recipe.loras | length }}</p>
+    {% if build.result %}
+        <p>Size: {{ "%.1f"|format(build.result.model_size_mb) }} MB | Time: {{ "%.1f"|format(build.result.conversion_time) }}s</p>
+    {% endif %}
+    {% if build.error %}
+        <p class="error">Error: {{ build.error }}</p>
+    {% endif %}
+    <footer>
+        <a href="/build/{{ build.id }}">Details</a>
+    </footer>
+</article>
+{% endfor %}
 {% else %}
-<p>No builds yet.</p>
+<p>No builds yet. <a href="/">Start by searching for a model.</a></p>
 {% endif %}
 {% endblock %}
