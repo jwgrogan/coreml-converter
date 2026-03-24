@@ -61,6 +61,14 @@ def _parse_lora_ref(ref):
 @click.option("--output", default="./output", type=click.Path())
 def build(base, lora, name, recipe, compute_units, attention, output):
     """Build a CoreML model from base + LoRAs."""
+    from coreml_converter.core.ml_check import check_ml_deps
+    ok, missing = check_ml_deps()
+    if not ok:
+        console.print(f"[red]Missing ML dependencies: {', '.join(missing)}[/red]")
+        console.print("[yellow]Run: ccml start   (sets up venv with all dependencies)[/yellow]")
+        console.print("[yellow]Or:  source .venv/bin/activate && pip install -e '.[ml]'[/yellow]")
+        sys.exit(1)
+
     app_dir = get_app_dir()
     config = load_config(app_dir / "config.json")
 

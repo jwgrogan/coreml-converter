@@ -6,6 +6,7 @@ from coreml_converter.cli.commands.build import build
 from coreml_converter.cli.commands.serve import serve
 from coreml_converter.cli.commands.cache import cache
 from coreml_converter.cli.commands.config_cmd import config
+from coreml_converter.cli.commands.start import start
 
 @click.group()
 @click.version_option(version=coreml_converter.__version__, prog_name="CoreML Converter")
@@ -19,3 +20,4 @@ cli.add_command(build)
 cli.add_command(serve)
 cli.add_command(cache)
 cli.add_command(config)
+cli.add_command(start)

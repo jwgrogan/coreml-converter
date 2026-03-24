@@ -34,6 +34,16 @@ def serve(port: int, host: str):
     app.state.job_manager = JobManager(cache_dir=app_dir / "cache", build_store=build_store)
     app.state.favorites = FavoritesStore(app_dir / "favorites.json")
 
-    console.print(f"[green]Starting CoreML Converter web UI[/green]")
-    console.print(f"  http://{host}:{port}")
+    # Check ML deps and warn (search/browse works without them, but builds won't)
+    from coreml_converter.core.ml_check import check_ml_deps
+    ok, missing = check_ml_deps()
+
+    console.print(f"[green bold]CoreML Converter[/green bold] v{__import__('coreml_converter').__version__}")
+    console.print(f"  Web UI: http://{host}:{port}")
+    if ok:
+        console.print(f"  ML deps: [green]all installed[/green] (builds will work)")
+    else:
+        console.print(f"  ML deps: [yellow]missing {', '.join(missing)}[/yellow]")
+        console.print(f"           Search/browse works, but builds require ML deps.")
+        console.print(f"           Run: [bold]ccml start[/bold] to set up everything.")
     uvicorn.run(app, host=host, port=port, log_level="info")

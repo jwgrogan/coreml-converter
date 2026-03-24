@@ -38,6 +38,7 @@ dev = [
 
 [project.scripts]
 coreml-converter = "coreml_converter.cli.main:cli"
+ccml = "coreml_converter.cli.main:cli"
 
 [tool.hatch.metadata]
 allow-direct-references = true
