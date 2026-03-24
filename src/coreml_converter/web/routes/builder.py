@@ -21,23 +21,31 @@ from coreml_converter.web.dependencies import templates, get_registry, get_build
 router = APIRouter()
 _executor = ThreadPoolExecutor(max_workers=2)
 
+# In-memory store for uploaded models (keyed by local ID)
+_uploaded_models: dict[str, ModelInfo] = {}
+
 
 @router.get("/build")
 async def builder_page(request: Request, base: str = Query(default="")):
     base_model = None
     if base:
-        registry = get_registry(request)
+        # Check uploaded models first
         if ":" in base:
             source_str, model_id = base.split(":", 1)
-            source_map = {"hf": ModelSource.HUGGINGFACE, "civitai": ModelSource.CIVITAI}
-            source = source_map.get(source_str)
-            loop = asyncio.get_event_loop()
-            results = await loop.run_in_executor(
-                _executor,
-                lambda: registry.search(model_id, source=source, model_type=ModelType.CHECKPOINT, limit=1),
-            )
-            if results:
-                base_model = results[0]
+            if model_id in _uploaded_models:
+                base_model = _uploaded_models[model_id]
+            else:
+                registry = get_registry(request)
+                source_map = {"hf": ModelSource.HUGGINGFACE, "civitai": ModelSource.CIVITAI}
+                source = source_map.get(source_str)
+                if source:
+                    loop = asyncio.get_event_loop()
+                    results = await loop.run_in_executor(
+                        _executor,
+                        lambda: registry.search(model_id, source=source, model_type=ModelType.CHECKPOINT, limit=1),
+                    )
+                    if results:
+                        base_model = results[0]
 
     return templates.TemplateResponse("builder.html", {
         "request": request,
@@ -130,9 +138,10 @@ async def upload_model(
     arch_map = {"SD1.5": BaseArchitecture.SD15, "SD2.0": BaseArchitecture.SD20}
     mt = ModelType.CHECKPOINT if model_type == "checkpoint" else ModelType.LORA
 
+    local_id = f"local_{upload_id}"
     model = ModelInfo(
         source=ModelSource.CIVITAI,  # placeholder source
-        id=f"local_{upload_id}",
+        id=local_id,
         name=Path(file.filename).stem,
         base_architecture=arch_map.get(arch, BaseArchitecture.SD15),
         model_type=mt,
@@ -140,6 +149,9 @@ async def upload_model(
         download_url="",
         metadata={"local_path": str(dest), "uploaded": True},
     )
+
+    # Store so builder page can look it up
+    _uploaded_models[local_id] = model
 
     return templates.TemplateResponse("partials/model_card.html", {
         "request": request,
