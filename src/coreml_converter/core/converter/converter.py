@@ -200,34 +200,61 @@ class Converter:
             logger.error(f"VAE decoder conversion failed: {e}")
             _report(f"VAE decoder failed: {e}", 0.80)
 
-        elapsed = time.monotonic() - start_time
-
         if not components_converted:
             raise RuntimeError("All component conversions failed. Check logs for details.")
+
+        # --- 4. Compile .mlpackage → .mlmodelc ---
+        _report("Compiling models to .mlmodelc (optimized for device)", 0.85)
+        compiled_dir = output_dir / "compiled"
+        compiled_dir.mkdir(exist_ok=True)
+        compiled_components = []
+
+        for comp in components_converted:
+            pkg_path = output_dir / f"{comp}.mlpackage"
+            if not pkg_path.exists():
+                continue
+            _report(f"Compiling {comp}...", 0.85 + (0.03 * components_converted.index(comp)))
+            try:
+                import subprocess
+                result = subprocess.run(
+                    ["xcrun", "coremlcompiler", "compile", str(pkg_path), str(compiled_dir)],
+                    capture_output=True, text=True, timeout=300,
+                )
+                if result.returncode == 0:
+                    compiled_components.append(comp)
+                    logger.info(f"Compiled {comp} to .mlmodelc")
+                else:
+                    logger.warning(f"Compilation of {comp} failed: {result.stderr}")
+            except FileNotFoundError:
+                logger.warning("xcrun/coremlcompiler not found — skipping compilation. Install Xcode Command Line Tools.")
+                break
+            except Exception as e:
+                logger.warning(f"Compilation of {comp} failed: {e}")
+
+        elapsed = time.monotonic() - start_time
 
         # Write manifest
         _report("Writing manifest", 0.95)
         manifest_path = output_dir / "manifest.json"
         self._write_manifest(recipe, manifest_path, components_converted)
 
-        # Calculate total size
+        # Calculate total size (prefer compiled, fall back to mlpackage)
         model_size_mb = 0.0
-        for comp in components_converted:
-            p = output_dir / f"{comp}.mlpackage"
-            if p.exists():
-                model_size_mb += sum(
-                    f.stat().st_size for f in p.rglob("*") if f.is_file()
-                ) / (1024 ** 2)
+        size_dir = compiled_dir if compiled_components else output_dir
+        for f in size_dir.rglob("*"):
+            if f.is_file():
+                model_size_mb += f.stat().st_size / (1024 ** 2)
 
         _report("Conversion complete", 1.0)
         logger.info(
-            f"Conversion done: {len(components_converted)}/3 components, "
+            f"Conversion done: {len(components_converted)}/3 components "
+            f"({len(compiled_components)} compiled), "
             f"{model_size_mb:.1f} MB, {elapsed:.1f}s"
         )
 
         return ConversionResult(
             mlpackage_path=output_dir,
-            mlmodelc_path=output_dir,
+            mlmodelc_path=compiled_dir if compiled_components else output_dir,
             manifest_path=manifest_path,
             conversion_time=elapsed,
             model_size_mb=model_size_mb,
