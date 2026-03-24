@@ -27,7 +27,6 @@ ml = [
     "transformers>=4.35",
     "safetensors>=0.4",
     "coremltools>=7.0",
-    "python-coreml-stable-diffusion @ git+https://github.com/apple/ml-stable-diffusion.git",
 ]
 dev = [
     "pytest>=7.0",

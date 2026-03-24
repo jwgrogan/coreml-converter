@@ -11,7 +11,6 @@ def check_ml_deps() -> tuple[bool, list[str]]:
         ("transformers", "transformers"),
         ("safetensors", "safetensors"),
         ("coremltools", "coremltools"),
-        ("python_coreml_stable_diffusion", "python_coreml_stable_diffusion"),
     ]:
         try:
             __import__(import_name)

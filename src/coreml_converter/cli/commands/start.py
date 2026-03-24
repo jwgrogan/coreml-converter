@@ -105,23 +105,6 @@ def start(port: int, no_serve: bool):
         else:
             console.print("[green]✓[/green] ML dependencies installed")
 
-        # Apple's ml-stable-diffusion needs --no-build-isolation
-        apple_check = subprocess.run(
-            [str(venv_python), "-c", "import python_coreml_stable_diffusion"],
-            capture_output=True,
-        )
-        if apple_check.returncode != 0:
-            console.print("[yellow]→[/yellow] Installing Apple ml-stable-diffusion...")
-            apple_result = subprocess.run(
-                [str(venv_pip), "install", "--quiet", "--no-build-isolation", "--no-deps",
-                 "git+https://github.com/apple/ml-stable-diffusion.git"],
-                capture_output=True, text=True,
-            )
-            if apple_result.returncode == 0:
-                console.print("[green]✓[/green] Apple ml-stable-diffusion installed")
-            else:
-                console.print("[yellow]⚠ Apple ml-stable-diffusion failed (conversion may not work)[/yellow]")
-
     # Step 4: Check config
     from coreml_converter.core.config import get_app_dir, load_config
     app_dir = get_app_dir()
