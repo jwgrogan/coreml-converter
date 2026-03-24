@@ -148,7 +148,7 @@ ml = [
     "transformers>=4.35",
     "safetensors>=0.4",
     "coremltools>=7.0",
-    "python-coreml-stable-diffusion>=0.1",
+    "python-coreml-stable-diffusion @ git+https://github.com/apple/ml-stable-diffusion.git",
 ]
 dev = [
     "pytest>=7.0",
@@ -4020,8 +4020,9 @@ router = APIRouter()
 async def history_page(request: Request):
     build_store = get_build_store(request)
     builds = build_store.list_all()
-    from datetime import datetime
-    builds.sort(key=lambda b: b.started_at or b.completed_at or datetime.min, reverse=True)
+    from datetime import datetime, timezone
+    _epoch = datetime.min.replace(tzinfo=timezone.utc)
+    builds.sort(key=lambda b: b.started_at or b.completed_at or _epoch, reverse=True)
     return templates.TemplateResponse("history.html", {
         "request": request,
         "builds": builds,
@@ -4472,7 +4473,8 @@ def validate_lora_dimensions(lora_path: Path, base_arch: BaseArchitecture) -> Di
             if "attn" in key and "lora_down" in key:
                 tensor = f.get_tensor(key)
                 actual_dim = tensor.shape[-1]
-                if actual_dim != expected_dim and actual_dim not in (actual_dim, 4, 8, 16, 32, 64, 128):
+                # Small LoRA rank dimensions (4, 8, etc.) are the low-rank decomposition, not the model dim
+                if actual_dim not in (expected_dim, 4, 8, 16, 32, 64, 128):
                     return DimensionResult(
                         expected=expected_dim,
                         actual=actual_dim,
