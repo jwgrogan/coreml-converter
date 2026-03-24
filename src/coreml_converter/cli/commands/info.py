@@ -20,11 +20,10 @@ def info(model_ref):
     from coreml_converter.cli.commands.search import get_registry
     source, model_id = _parse_ref(model_ref)
     registry = get_registry()
-    results = registry.search(model_id, source=source, limit=1)
-    if not results:
+    model = registry.get_by_id(source, model_id)
+    if not model:
         console.print(f"[red]Model not found: {model_ref}[/red]")
         return
-    model = results[0]
     console.print(f"[bold]{model.name}[/bold]")
     console.print(f"  Source:       {model.source.value}")
     console.print(f"  ID:           {model.id}")

@@ -105,6 +105,46 @@ class CivitAIClient(RegistryClient):
             ))
         return results
 
+    def get_by_id(self, model_id: str) -> ModelInfo | None:
+        """Fetch a single model by its CivitAI ID."""
+        self._rate_limiter.acquire()
+        resp = self._client.get(f"{CIVITAI_API}/models/{model_id}", headers=self._headers())
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        item = resp.json()
+        mt = self._parse_civitai_type(item.get("type", ""))
+        if mt is None:
+            return None
+        versions = item.get("modelVersions", [])
+        version = None
+        arch = None
+        files = []
+        for v in versions:
+            a = self._parse_base_model(v.get("baseModel", ""))
+            if a is None:
+                continue
+            f = [fi for fi in v.get("files", []) if fi.get("type") == "Model"]
+            if f:
+                version = v
+                arch = a
+                files = f
+                break
+        if version is None or arch is None:
+            return None
+        return ModelInfo(
+            source=ModelSource.CIVITAI, id=str(item["id"]), name=item["name"],
+            base_architecture=arch, model_type=mt, tags=item.get("tags", []),
+            download_url=files[0]["downloadUrl"],
+            metadata={
+                "version_id": version["id"],
+                "version_name": version.get("name", ""),
+                "download_count": item.get("stats", {}).get("downloadCount", 0),
+                "images": [img.get("url") for img in version.get("images", [])[:3]],
+                "description": item.get("description", ""),
+            },
+        )
+
     def get_compatible_loras(self, base_model: ModelInfo, limit: int = 20) -> list[ModelInfo]:
         return self.search(query="", model_type=ModelType.LORA,
                           base_arch=base_model.base_architecture, limit=limit)

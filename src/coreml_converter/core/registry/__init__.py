@@ -44,6 +44,16 @@ class Registry:
                 logger.exception(f"LoRA search failed for {src.value}")
         return results
 
+    def get_by_id(self, source: ModelSource, model_id: str) -> ModelInfo | None:
+        client = self._clients.get(source)
+        if client is None:
+            return None
+        if hasattr(client, "get_by_id"):
+            return client.get_by_id(model_id)
+        # Fallback: search by ID
+        results = client.search(model_id, limit=1)
+        return results[0] if results else None
+
     def download(self, model: ModelInfo, dest: Path) -> Path:
         client = self._clients.get(model.source)
         if client is None:
