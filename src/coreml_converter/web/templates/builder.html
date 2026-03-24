@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block content %}
 <h1>Model Builder</h1>
-<div x-data="builder()" class="grid">
+<div x-data="builder({{ base_model.model_dump_json() if base_model else '{}' }})" class="grid">
     <!-- Base Model -->
     <div>
         <h3>Base Model</h3>
@@ -61,14 +61,40 @@
 </div>
 
 {% if base_model %}
-<!-- Recipe & Compatibility -->
+<!-- Recipe & Build Form -->
 <div id="recipe-panel">
     <h3>Recipe</h3>
     <div id="lora-list">
-        <p>No LoRAs added yet.</p>
+        <p x-show="loras.length === 0">No LoRAs added yet.</p>
+        <template x-for="(lora, index) in loras" :key="lora.model.id">
+            <article class="lora-card">
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <h5 x-text="lora.model.name" style="margin:0;"></h5>
+                    <button @click="removeLora(index)" style="width:auto; padding:0.25em 0.5em; margin:0;">Remove</button>
+                </div>
+                <label>
+                    Weight: <span x-text="lora.weight"></span>
+                    <input type="range" min="0" max="1" step="0.05" x-model.number="lora.weight">
+                </label>
+                <small x-show="lora.recommended_weight" x-text="'Recommended: ' + lora.recommended_weight + (lora.weight_source ? ' (' + lora.weight_source + ')' : '')"></small>
+            </article>
+        </template>
     </div>
+
     <div id="compatibility-report"></div>
-    <button hx-post="/build/start" hx-include="#build-form">Convert to CoreML</button>
+
+    <label>Model Name
+        <input type="text" x-model="modelName" placeholder="my-custom-model">
+    </label>
+
+    <button @click="startBuild()" :disabled="!baseModel.id">Convert to CoreML</button>
+
+    <!-- Hidden form for htmx submission -->
+    <form id="build-form" x-ref="buildForm" method="post" action="/build/start" style="display:none;">
+        <input type="hidden" name="base_model" :value="JSON.stringify(baseModel)">
+        <input type="hidden" name="loras" :value="JSON.stringify(loras)">
+        <input type="hidden" name="name" :value="modelName">
+    </form>
 </div>
 {% endif %}
 

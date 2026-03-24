@@ -1,6 +1,8 @@
-function builder() {
+function builder(baseModelData) {
     return {
+        baseModel: baseModelData || {},
         loras: [],
+        modelName: (baseModelData && baseModelData.name ? baseModelData.name + '-custom' : 'custom-model'),
         addLora(model, recommendedWeight, weightSource) {
             if (this.loras.find(l => l.model.id === model.id)) return;
             this.loras.push({
@@ -10,8 +12,11 @@ function builder() {
                 weight_source: weightSource,
             });
         },
-        removeLora(id) {
-            this.loras = this.loras.filter(l => l.model.id !== id);
+        removeLora(index) {
+            this.loras.splice(index, 1);
+        },
+        startBuild() {
+            this.$refs.buildForm.submit();
         },
     };
 }
