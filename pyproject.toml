@@ -1,0 +1,50 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "coreml-converter"
+version = "0.1.0"
+description = "Convert Stable Diffusion models + LoRAs to CoreML for Apple Silicon"
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic>=2.0",
+    "click>=8.0",
+    "rich>=13.0",
+    "httpx>=0.25",
+    "huggingface-hub>=0.20",
+    "fastapi>=0.104",
+    "uvicorn>=0.24",
+    "jinja2>=3.1",
+    "python-multipart>=0.0.6",
+    "sse-starlette>=1.6",
+]
+
+[project.optional-dependencies]
+ml = [
+    "torch>=2.0",
+    "diffusers>=0.25",
+    "transformers>=4.35",
+    "safetensors>=0.4",
+    "coremltools>=7.0",
+    "python-coreml-stable-diffusion @ git+https://github.com/apple/ml-stable-diffusion.git",
+]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.23",
+    "httpx",
+    "respx>=0.20",
+]
+
+[project.scripts]
+coreml-converter = "coreml_converter.cli.main:cli"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/coreml_converter"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
