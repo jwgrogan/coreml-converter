@@ -59,7 +59,9 @@ def _parse_lora_ref(ref):
 @click.option("--compute-units", default="all", type=click.Choice(["all", "cpuAndGPU"]))
 @click.option("--attention", default="split_einsum", type=click.Choice(["split_einsum", "original"]))
 @click.option("--output", default="./output", type=click.Path())
-def build(base, lora, name, recipe, compute_units, attention, output):
+@click.option("--studio", is_flag=True, default=False,
+              help="Studio output: {name}.studio.zip with compiled .mlmodelc, tokenizer files, and manifest")
+def build(base, lora, name, recipe, compute_units, attention, output, studio):
     """Build a CoreML model from base + LoRAs."""
     from coreml_converter.core.ml_check import check_ml_deps
     ok, missing = check_ml_deps()
@@ -90,7 +92,8 @@ def build(base, lora, name, recipe, compute_units, attention, output):
             compute_units=conv_data.get("compute_units", "all"),
             attention=conv_data.get("attention", "split_einsum"),
             precision=conv_data.get("precision", "float16"),
-            include_safety_checker=conv_data.get("include_safety_checker", False))
+            include_safety_checker=conv_data.get("include_safety_checker", False),
+            studio=studio)
         build_recipe = Recipe(name=manifest["name"], base_model=base_model,
             loras=lora_entries, conversion_config=conv_config)
     elif base:
@@ -133,7 +136,8 @@ def build(base, lora, name, recipe, compute_units, attention, output):
                 lora_entries.append(LoRAEntry(model=lora_results[0], weight=l_weight))
         model_name = name or f"{base_model.name}-custom"
         conv_config = ConversionConfig(output_dir=Path(output), model_name=model_name,
-            compute_units=compute_units, attention=attention)
+            compute_units=compute_units, attention=attention,
+            studio=studio)
         build_recipe = Recipe(name=model_name, base_model=base_model,
             loras=lora_entries, conversion_config=conv_config)
     else:
@@ -221,9 +225,12 @@ def build(base, lora, name, recipe, compute_units, attention, output):
             record.result = result
             store.save(record)
             console.print(f"\n[green]Build complete![/green]")
-            console.print(f"  mlpackage: {result.mlpackage_path}")
-            console.print(f"  mlmodelc:  {result.mlmodelc_path}")
-            console.print(f"  manifest:  {result.manifest_path}")
+            if studio:
+                console.print(f"  output:    {result.mlpackage_path}")
+            else:
+                console.print(f"  mlpackage: {result.mlpackage_path}")
+                console.print(f"  mlmodelc:  {result.mlmodelc_path}")
+                console.print(f"  manifest:  {result.manifest_path}")
             console.print(f"  size:      {result.model_size_mb:.1f} MB")
             console.print(f"  time:      {result.conversion_time:.1f}s")
         except Exception as e:

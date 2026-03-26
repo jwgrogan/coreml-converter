@@ -73,6 +73,7 @@ class ConversionConfig(BaseModel):
     include_safety_checker: bool = False
     output_dir: Path
     model_name: str
+    studio: bool = False
 
 
 class ConversionResult(BaseModel):

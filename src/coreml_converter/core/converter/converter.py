@@ -231,12 +231,49 @@ class Converter:
             except Exception as e:
                 logger.warning(f"Compilation of {comp} failed: {e}")
 
+        # --- 5. Studio mode: bundle tokenizer files, clean up, optionally zip ---
+        if config.studio:
+            _report("Bundling tokenizer files for Studio", 0.90)
+            self._bundle_tokenizer(merged_model_path, output_dir)
+
+            if compiled_components:
+                _report("Removing .mlpackage intermediates (studio mode)", 0.92)
+                for comp in components_converted:
+                    pkg_path = output_dir / f"{comp}.mlpackage"
+                    if pkg_path.exists():
+                        shutil.rmtree(pkg_path)
+                        logger.info(f"Removed intermediate {comp}.mlpackage")
+
         elapsed = time.monotonic() - start_time
 
         # Write manifest
         _report("Writing manifest", 0.95)
         manifest_path = output_dir / "manifest.json"
         self._write_manifest(recipe, manifest_path, components_converted)
+
+        # Studio zip: always zip and remove the directory
+        if config.studio:
+            _report("Creating Studio zip archive", 0.97)
+            zip_path = self._create_studio_zip(output_dir, config.model_name)
+            shutil.rmtree(output_dir)
+            logger.info(f"Studio zip created: {zip_path}")
+
+            zip_size_mb = zip_path.stat().st_size / (1024 ** 2)
+
+            _report("Conversion complete", 1.0)
+            logger.info(
+                f"Conversion done: {len(components_converted)}/3 components "
+                f"({len(compiled_components)} compiled), "
+                f"{zip_size_mb:.1f} MB, {elapsed:.1f}s"
+            )
+
+            return ConversionResult(
+                mlpackage_path=zip_path,
+                mlmodelc_path=zip_path,
+                manifest_path=zip_path,
+                conversion_time=elapsed,
+                model_size_mb=zip_size_mb,
+            )
 
         # Calculate total size (prefer compiled, fall back to mlpackage)
         model_size_mb = 0.0
@@ -259,6 +296,29 @@ class Converter:
             conversion_time=elapsed,
             model_size_mb=model_size_mb,
         )
+
+    def _bundle_tokenizer(self, merged_model_path: Path, output_dir: Path) -> None:
+        tokenizer_dir = merged_model_path / "tokenizer"
+        compiled_dir = output_dir / "compiled"
+        for filename in ("merges.txt", "vocab.json"):
+            src = tokenizer_dir / filename
+            if src.exists():
+                shutil.copy2(src, output_dir / filename)
+                if compiled_dir.exists():
+                    shutil.copy2(src, compiled_dir / filename)
+                logger.info(f"Bundled tokenizer file: {filename}")
+            else:
+                logger.warning(f"Tokenizer file not found: {src}")
+
+    def _create_studio_zip(self, output_dir: Path, model_name: str) -> Path:
+        import zipfile
+        zip_path = output_dir.parent / f"{model_name}.studio.zip"
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            for file_path in sorted(output_dir.rglob("*")):
+                if file_path.is_file():
+                    arcname = f"{model_name}/{file_path.relative_to(output_dir)}"
+                    zf.write(file_path, arcname)
+        return zip_path
 
     def _write_manifest(self, recipe: Recipe, path: Path,
                         components: list[str] | None = None) -> None:
