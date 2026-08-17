@@ -82,6 +82,8 @@ class RegisterPathRequest(BaseModel):
     path: str
     model_type: str = "checkpoint"
     arch: str = "SD1.5"
+    # Display name, when the on-disk filename is not what the user should see.
+    name: str | None = None
 
 
 @router.post("/upload")
@@ -103,7 +105,7 @@ async def upload(request: Request):
 
         try:
             model = uploads.register_path(
-                payload.path, payload.model_type, payload.arch
+                payload.path, payload.model_type, payload.arch, name=payload.name
             )
         except ValueError as e:
             return _error(str(e), 400, "unsupported_format")

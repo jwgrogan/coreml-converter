@@ -81,8 +81,14 @@ def register_path(
     path: str | Path,
     model_type: str = "checkpoint",
     arch: str = "SD1.5",
+    name: str | None = None,
 ) -> ModelInfo:
     """Register an existing on-disk checkpoint without copying it.
+
+    `name` overrides the label derived from the filename. Callers that store
+    files under generated names — Fanny prefixes each with an id to keep
+    same-named imports apart — pass the name the user actually sees, so it is
+    that name which ends up in the build manifest.
 
     Raises ValueError for a disallowed extension and FileNotFoundError if the
     path is not a readable file.
@@ -97,7 +103,7 @@ def register_path(
     local_id = f"local_{uuid.uuid4().hex[:8]}"
     return _register(
         resolved,
-        resolved.stem,
+        name or resolved.stem,
         model_type,
         arch,
         uploaded=False,

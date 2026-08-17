@@ -378,3 +378,34 @@ class TestBuildsList:
 def _write(path):
     path.write_bytes(b"w" * 32)
     return path
+
+
+class TestDisplayName:
+    """Fanny stores library files under an id-prefixed filename to keep
+    same-named imports apart. Without an explicit name that prefix ends up in
+    the build manifest the user reads."""
+
+    @pytest.mark.asyncio
+    async def test_explicit_name_overrides_the_filename(self, client, tmp_path):
+        stored = tmp_path / "98F75B0B-uberRealisticPornMerge_v23Final.safetensors"
+        stored.write_bytes(b"x" * 16)
+
+        async with client as c:
+            resp = await c.post(
+                "/api/upload",
+                json={"path": str(stored), "name": "uberRealisticPornMerge_v23Final"},
+            )
+
+        assert resp.status_code == 200
+        assert resp.json()["name"] == "uberRealisticPornMerge_v23Final"
+        assert uploads.get(resp.json()["model_ref"]).name == "uberRealisticPornMerge_v23Final"
+
+    @pytest.mark.asyncio
+    async def test_filename_is_used_when_no_name_is_given(self, client, tmp_path):
+        stored = tmp_path / "plain.safetensors"
+        stored.write_bytes(b"x" * 16)
+
+        async with client as c:
+            resp = await c.post("/api/upload", json={"path": str(stored)})
+
+        assert resp.json()["name"] == "plain"
