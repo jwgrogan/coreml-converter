@@ -11,6 +11,11 @@ def check_ml_deps() -> tuple[bool, list[str]]:
         ("transformers", "transformers"),
         ("safetensors", "safetensors"),
         ("coremltools", "coremltools"),
+        # diffusers routes LoRA loading through PEFT, and Apple's converter is
+        # what actually performs the conversion. Both fail deep inside a build
+        # if missing, so report them up front instead.
+        ("peft", "peft"),
+        ("python_coreml_stable_diffusion", "python_coreml_stable_diffusion"),
     ]:
         try:
             __import__(import_name)

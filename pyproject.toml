@@ -39,6 +39,9 @@ ml = [
     "safetensors>=0.4",
     "coremltools>=8.0,<10",
     "diffusionkit==0.4.0",
+    # diffusers routes load_lora_weights/fuse_lora through PEFT; without it
+    # every LoRA merge fails with "PEFT backend is required for this method."
+    "peft==0.13.2",
 ]
 dev = [
     "pytest>=7.0",
