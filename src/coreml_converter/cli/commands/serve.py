@@ -44,6 +44,13 @@ def serve(port: int, host: str):
     )
     build_store = BuildStore(app_dir / "builds.json")
     app.state.build_store = build_store
+
+    # Builds run in-process, so anything still marked running belongs to a
+    # process that no longer exists — otherwise it stays "running" in the
+    # user's history forever.
+    interrupted = build_store.fail_interrupted()
+    if interrupted:
+        console.print(f"  Marked {interrupted} interrupted build(s) as failed")
     app.state.job_manager = JobManager(cache_dir=app_dir / "cache", build_store=build_store)
     app.state.favorites = FavoritesStore(app_dir / "favorites.json")
 

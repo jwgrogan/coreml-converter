@@ -40,3 +40,29 @@ class BuildStore:
     def list_all(self) -> list[BuildRecord]:
         records = self._read_all()
         return [BuildRecord(**r) for r in records.values()]
+
+    def fail_interrupted(self, reason: str = "Interrupted — the converter stopped mid-build") -> int:
+        """Mark builds still recorded as running as failed.
+
+        Builds run in-process and do not survive a restart, so a record still
+        marked RUNNING at startup belongs to a process that is gone. Without
+        this it stays "running" in the user's build history forever.
+
+        Returns how many records were reconciled.
+        """
+        from datetime import datetime, timezone
+        from coreml_converter.core.models import BuildStatus
+
+        records = self._read_all()
+        changed = 0
+        for data in records.values():
+            if data.get("status") != BuildStatus.RUNNING.value:
+                continue
+            data["status"] = BuildStatus.FAILED.value
+            data["error"] = reason
+            data["completed_at"] = datetime.now(timezone.utc).isoformat()
+            changed += 1
+
+        if changed:
+            self._write_all(records)
+        return changed
