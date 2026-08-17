@@ -5,9 +5,6 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-import shutil
-import uuid
-
 from fastapi import APIRouter, Request, Form, Query, UploadFile, File
 from starlette.responses import HTMLResponse, RedirectResponse
 
@@ -16,13 +13,11 @@ from coreml_converter.core.models import (
     BaseArchitecture, BuildRecord, ConversionConfig, LoRAEntry,
     ModelInfo, ModelSource, ModelType, Recipe,
 )
+from coreml_converter.web import uploads
 from coreml_converter.web.dependencies import render, get_registry, get_build_store
 
 router = APIRouter()
 _executor = ThreadPoolExecutor(max_workers=2)
-
-# In-memory store for uploaded models (keyed by local ID)
-_uploaded_models: dict[str, ModelInfo] = {}
 
 
 @router.get("/build")
@@ -31,8 +26,9 @@ async def builder_page(request: Request, base: str = Query(default="")):
     if base:
         if ":" in base:
             source_str, model_id = base.split(":", 1)
-            if model_id in _uploaded_models:
-                base_model = _uploaded_models[model_id]
+            local = uploads.get(model_id)
+            if local is not None:
+                base_model = local
             else:
                 registry = get_registry(request)
                 source_map = {"hf": ModelSource.HUGGINGFACE, "civitai": ModelSource.CIVITAI}
@@ -111,35 +107,16 @@ async def upload_model(
     if not file.filename:
         return HTMLResponse("<p class='error'>No file selected</p>", status_code=400)
 
-    allowed_exts = {".safetensors", ".ckpt", ".bin"}
-    ext = Path(file.filename).suffix.lower()
-    if ext not in allowed_exts:
-        return HTMLResponse(f"<p class='error'>Unsupported format: {ext}. Use .safetensors, .ckpt, or .bin</p>", status_code=400)
-
-    cache_dir = get_app_dir() / "cache" / "uploads"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    upload_id = str(uuid.uuid4())[:8]
-    dest = cache_dir / f"{upload_id}_{file.filename}"
-
-    with open(dest, "wb") as f:
-        shutil.copyfileobj(file.file, f)
-
-    arch_map = {"SD1.5": BaseArchitecture.SD15, "SD2.0": BaseArchitecture.SD20}
-    mt = ModelType.CHECKPOINT if model_type == "checkpoint" else ModelType.LORA
-
-    local_id = f"local_{upload_id}"
-    model = ModelInfo(
-        source=ModelSource.CIVITAI,
-        id=local_id,
-        name=Path(file.filename).stem,
-        base_architecture=arch_map.get(arch, BaseArchitecture.SD15),
-        model_type=mt,
-        tags=["uploaded"],
-        download_url="",
-        metadata={"local_path": str(dest), "uploaded": True},
-    )
-
-    _uploaded_models[local_id] = model
+    try:
+        model = uploads.store_upload(
+            file.file,
+            file.filename,
+            cache_dir=get_app_dir() / "cache" / "uploads",
+            model_type=model_type,
+            arch=arch,
+        )
+    except ValueError as e:
+        return HTMLResponse(f"<p class='error'>{e}</p>", status_code=400)
 
     return render(request, "partials/model_card.html", {
         "model": model,

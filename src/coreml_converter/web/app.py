@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from coreml_converter.web.routes import search, builder, progress, history
+from coreml_converter.web.routes import api, search, builder, progress, history
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 STATIC_DIR = Path(__file__).parent / "static"
@@ -18,6 +18,9 @@ def create_app() -> FastAPI:
     STATIC_DIR.mkdir(exist_ok=True)
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
+    # JSON API first: its /api prefix cannot collide with the HTML routes,
+    # and it is what Fanny talks to.
+    app.include_router(api.router)
     app.include_router(search.router)
     app.include_router(builder.router)
     app.include_router(progress.router)
