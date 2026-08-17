@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 import subprocess
 import sys
@@ -28,6 +29,39 @@ _RESOURCE_MLMODELC = [
     "VAEEncoder.mlmodelc",
 ]
 _RESOURCE_TOKENIZER = ["vocab.json", "merges.txt"]
+
+SCRATCH_PREFIX = "fanny-convert-"
+
+
+def sweep_stale_scratch_dirs(
+    output_dir: Path, max_age_hours: float = 24.0
+) -> list[Path]:
+    """Delete abandoned scratch dirs left behind by killed builds.
+
+    A build normally removes its own scratch dir in a `finally`, but a hard
+    kill (or a machine losing power mid-UNet) skips that and strands tens of
+    GB next to the user's models. Anything older than `max_age_hours` cannot
+    belong to a live build, so it is safe to remove.
+
+    Returns the directories actually removed.
+    """
+    if not output_dir.is_dir():
+        return []
+
+    cutoff = time.time() - (max_age_hours * 3600)
+    removed: list[Path] = []
+    for entry in output_dir.iterdir():
+        if not entry.is_dir() or not entry.name.startswith(SCRATCH_PREFIX):
+            continue
+        try:
+            if entry.stat().st_mtime >= cutoff:
+                continue
+            shutil.rmtree(entry, ignore_errors=True)
+            removed.append(entry)
+            logger.info("Removed stale scratch dir %s", entry)
+        except OSError:
+            logger.warning("Could not remove stale scratch dir %s", entry, exc_info=True)
+    return removed
 
 
 def check_disk_space(path: Path, required_gb: float = 20.0) -> None:
@@ -85,14 +119,15 @@ class Converter:
         progress_callback: Callable[[str, float], None] | None = None,
     ) -> ConversionResult:
         config = recipe.conversion_config
-        output_dir = config.output_dir / config.model_name
-        output_dir.mkdir(parents=True, exist_ok=True)
+        final_dir = config.output_dir / config.model_name
+        config.output_dir.mkdir(parents=True, exist_ok=True)
 
         def _report(msg, pct):
             if progress_callback:
                 progress_callback(msg, pct)
 
         check_disk_space(config.output_dir)
+        sweep_stale_scratch_dirs(config.output_dir)
         start_time = time.monotonic()
 
         # SD1.5 = 64x64 latent (512px), SD2.0 = 96x96 (768px).
@@ -104,71 +139,112 @@ class Converter:
         _report("Preparing Apple ml-stable-diffusion converter", 0.05)
         self._require_apple_converter()
 
-        # Convert into a scratch dir on the same volume (so the disk check
-        # applies), then keep only the compiled Resources/ bundle — the raw
-        # .mlpackage intermediates are ~2x the size and unused at runtime.
-        work_dir = Path(tempfile.mkdtemp(prefix="fanny-convert-", dir=str(config.output_dir)))
+        # Everything is assembled inside a scratch dir on the same volume (so
+        # the disk check applies and the final move is a rename, not a copy),
+        # and only moved into place once the build has fully succeeded. A
+        # failed or killed build therefore never leaves a half-written model
+        # folder for Fanny's scanner to find.
+        work_dir = Path(
+            tempfile.mkdtemp(prefix=SCRATCH_PREFIX, dir=str(config.output_dir))
+        )
         try:
             resources = self._run_apple_converter(
                 merged_model_path=merged_model_path,
-                work_dir=work_dir,
+                work_dir=work_dir / "apple",
                 latent_h=latent_h,
                 latent_w=latent_w,
                 attention=attention,
                 compute_unit=compute_unit,
                 report=_report,
             )
-            components_converted = self._install_resources_flat(resources, output_dir)
+
+            staging = work_dir / config.model_name
+            staging.mkdir(parents=True, exist_ok=True)
+            components_converted = self._install_resources_flat(resources, staging)
+
+            if not components_converted:
+                raise RuntimeError(
+                    "Apple converter produced no usable .mlmodelc components. "
+                    "Check logs above."
+                )
+
+            _report("Writing manifest", 0.95)
+            manifest_name = "manifest.json"
+            self._write_manifest(
+                recipe, staging / manifest_name, components_converted
+            )
+
+            # Studio mode: zip the (flat) model folder for import into Fanny.
+            if config.studio:
+                _report("Creating Studio zip archive", 0.97)
+                staged_zip = self._create_studio_zip(staging, config.model_name)
+                final_zip = config.output_dir / staged_zip.name
+                self._promote(staged_zip, final_zip)
+
+                elapsed = time.monotonic() - start_time
+                zip_size_mb = final_zip.stat().st_size / (1024 ** 2)
+                _report("Conversion complete", 1.0)
+                logger.info(
+                    f"Conversion done ({attention}): {len(components_converted)} "
+                    f"components, {zip_size_mb:.1f} MB, {elapsed:.1f}s"
+                )
+                return ConversionResult(
+                    mlpackage_path=final_zip,
+                    mlmodelc_path=final_zip,
+                    manifest_path=final_zip,
+                    conversion_time=elapsed,
+                    model_size_mb=zip_size_mb,
+                )
+
+            model_size_mb = sum(
+                f.stat().st_size for f in staging.rglob("*") if f.is_file()
+            ) / (1024 ** 2)
+
+            self._promote(staging, final_dir)
         finally:
             shutil.rmtree(work_dir, ignore_errors=True)
 
-        if not components_converted:
-            raise RuntimeError(
-                "Apple converter produced no usable .mlmodelc components. Check logs above."
-            )
-
         elapsed = time.monotonic() - start_time
-
-        # Write manifest alongside the model.
-        _report("Writing manifest", 0.95)
-        manifest_path = output_dir / "manifest.json"
-        self._write_manifest(recipe, manifest_path, components_converted)
-
-        # Studio mode: zip the (flat) model folder for import into Fanny.
-        if config.studio:
-            _report("Creating Studio zip archive", 0.97)
-            zip_path = self._create_studio_zip(output_dir, config.model_name)
-            shutil.rmtree(output_dir)
-            zip_size_mb = zip_path.stat().st_size / (1024 ** 2)
-            _report("Conversion complete", 1.0)
-            logger.info(
-                f"Conversion done ({attention}): {len(components_converted)} components, "
-                f"{zip_size_mb:.1f} MB, {elapsed:.1f}s"
-            )
-            return ConversionResult(
-                mlpackage_path=zip_path,
-                mlmodelc_path=zip_path,
-                manifest_path=zip_path,
-                conversion_time=elapsed,
-                model_size_mb=zip_size_mb,
-            )
-
-        model_size_mb = sum(
-            f.stat().st_size for f in output_dir.rglob("*") if f.is_file()
-        ) / (1024 ** 2)
-
         _report("Conversion complete", 1.0)
         logger.info(
             f"Conversion done ({attention}): {len(components_converted)} components, "
             f"{model_size_mb:.1f} MB, {elapsed:.1f}s"
         )
         return ConversionResult(
-            mlpackage_path=output_dir,
-            mlmodelc_path=output_dir,
-            manifest_path=manifest_path,
+            mlpackage_path=final_dir,
+            mlmodelc_path=final_dir,
+            manifest_path=final_dir / manifest_name,
             conversion_time=elapsed,
             model_size_mb=model_size_mb,
         )
+
+    @staticmethod
+    def _promote(staged: Path, final: Path) -> None:
+        """Move a finished build into its published location.
+
+        `staged` lives under `final`'s parent, so os.replace is a same-volume
+        rename. Any previous build of the same name is moved aside first
+        (os.replace refuses a non-empty directory target) and deleted only
+        after the new one is in place, so a crash mid-swap leaves either the
+        old model or the new one — never neither.
+        """
+        final.parent.mkdir(parents=True, exist_ok=True)
+
+        if not final.exists():
+            os.replace(staged, final)
+            return
+
+        superseded = final.with_name(f"{final.name}.superseded-{os.getpid()}")
+        os.replace(final, superseded)
+        try:
+            os.replace(staged, final)
+        except OSError:
+            os.replace(superseded, final)  # put the old build back
+            raise
+        if superseded.is_dir():
+            shutil.rmtree(superseded, ignore_errors=True)
+        else:
+            superseded.unlink(missing_ok=True)
 
     # --- Apple converter delegation ---
 
@@ -200,6 +276,7 @@ class Converter:
         report: Callable[[str, float], None],
     ) -> Path:
         """Run torch2coreml and return the resulting Resources/ directory."""
+        work_dir.mkdir(parents=True, exist_ok=True)
         cmd = [
             sys.executable, "-m", "python_coreml_stable_diffusion.torch2coreml",
             "--model-version", str(merged_model_path),

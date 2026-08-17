@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import shutil
+import tempfile
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -32,6 +34,14 @@ def _set_progress(job_id: str, step: str, message: str, percent: int, steps_done
 def _get_progress(job_id: str) -> dict:
     with _progress_lock:
         return _progress.get(job_id, {})
+
+
+def get_progress(job_id: str) -> dict:
+    """Latest progress snapshot for a job, or {} once it has been consumed.
+
+    Public counterpart to the SSE stream, for pollers like the JSON API.
+    """
+    return _get_progress(job_id)
 
 
 def _run_build(job_id: str, record_dict: dict, cache_dir: str, output_dir: str, civitai_api_key: str | None = None) -> dict:
@@ -80,20 +90,34 @@ def _run_build(job_id: str, record_dict: dict, cache_dir: str, output_dir: str, 
                 lora_path = registry.download(entry.model, cache)
                 entry.model.metadata["local_path"] = str(lora_path)
 
-        # Merge
-        current_step += 1
-        _set_progress(job_id, "merging",
-                      f"Merging {total_loras} LoRA(s) into base model..." if total_loras else "Preparing model...",
-                      int(current_step / total_steps * 100), current_step, total_steps)
-        merger = Merger()
-        merged_path = merger.merge(recipe, Path(cache_dir), Path(output_dir))
+        # Merge + convert. The merged diffusers pipeline is a multi-GB
+        # intermediate, so it goes in a scratch dir that is always cleaned up
+        # rather than into output_dir — which is Fanny's models folder, where
+        # a stray `merged_pipeline/` would sit next to the user's models.
+        from coreml_converter.core.converter.converter import (
+            SCRATCH_PREFIX, sweep_stale_scratch_dirs,
+        )
 
-        # Convert
-        current_step += 1
-        _set_progress(job_id, "converting", "Converting to CoreML (this may take several minutes)...",
-                      int(current_step / total_steps * 90), current_step, total_steps)
-        converter = Converter()
-        result = converter.convert(merged_path, recipe)
+        out_root = Path(output_dir)
+        out_root.mkdir(parents=True, exist_ok=True)
+        sweep_stale_scratch_dirs(out_root)
+        scratch = Path(tempfile.mkdtemp(prefix=SCRATCH_PREFIX, dir=str(out_root)))
+        try:
+            current_step += 1
+            _set_progress(job_id, "merging",
+                          f"Merging {total_loras} LoRA(s) into base model..." if total_loras else "Preparing model...",
+                          int(current_step / total_steps * 100), current_step, total_steps)
+            merger = Merger()
+            merged_path = merger.merge(recipe, cache, scratch)
+
+            # Convert
+            current_step += 1
+            _set_progress(job_id, "converting", "Converting to CoreML (this may take several minutes)...",
+                          int(current_step / total_steps * 90), current_step, total_steps)
+            converter = Converter()
+            result = converter.convert(merged_path, recipe)
+        finally:
+            shutil.rmtree(scratch, ignore_errors=True)
 
         _set_progress(job_id, "completed", "Build complete!", 100, total_steps, total_steps)
 

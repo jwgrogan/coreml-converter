@@ -4,10 +4,11 @@ import click
 import uvicorn
 
 from coreml_converter.cli.formatting import console
+from coreml_converter.core.config import DEFAULT_PORT
 
 
 @click.command()
-@click.option("--port", default=8420, type=int, help="Port to listen on")
+@click.option("--port", default=DEFAULT_PORT, type=int, help="Port to listen on")
 @click.option("--host", default="127.0.0.1", help="Host to bind to")
 def serve(port: int, host: str):
     """Start the web UI."""
@@ -33,6 +34,14 @@ def serve(port: int, host: str):
     app.state.build_store = build_store
     app.state.job_manager = JobManager(cache_dir=app_dir / "cache", build_store=build_store)
     app.state.favorites = FavoritesStore(app_dir / "favorites.json")
+
+    # Clear scratch dirs stranded by builds that were killed rather than
+    # failing cleanly; each can be tens of GB.
+    from pathlib import Path
+    from coreml_converter.core.converter.converter import sweep_stale_scratch_dirs
+    swept = sweep_stale_scratch_dirs(Path(config.output_dir).expanduser())
+    if swept:
+        console.print(f"  Cleaned {len(swept)} stale build scratch dir(s)")
 
     # Check ML deps and warn (search/browse works without them, but builds won't)
     from coreml_converter.core.ml_check import check_ml_deps

@@ -21,13 +21,24 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# The conversion environment is pinned, not ranged. Apple's
+# python_coreml_stable_diffusion (installed separately by `ccml start`, since
+# its own metadata pins an unbuildable numpy<1.24) imports diffusers,
+# transformers and diffusionkit at module scope and only works against the
+# versions it was released with — resolving these ranges to "latest" yields a
+# torch2coreml that cannot be imported. torch is pinned to the version
+# coremltools states it was tested against.
 ml = [
-    "torch>=2.7,<2.8",
+    "torch==2.7.0",
     "numpy<2.0",
-    "diffusers>=0.25",
-    "transformers>=4.35",
+    "scipy<1.14",
+    "scikit-learn<1.6",
+    "diffusers==0.30.2",
+    "transformers==4.44.2",
+    "huggingface-hub==0.24.6",
     "safetensors>=0.4",
-    "coremltools>=7.0",
+    "coremltools>=8.0,<10",
+    "diffusionkit==0.4.0",
 ]
 dev = [
     "pytest>=7.0",

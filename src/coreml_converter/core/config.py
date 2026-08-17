@@ -5,6 +5,12 @@ from pathlib import Path
 from pydantic import BaseModel
 
 
+# Fanny spawns and health-checks the converter on this port; keeping the
+# CLI default the same means a hand-started `ccml serve` is also the one
+# Fanny finds.
+DEFAULT_PORT = 8898
+
+
 class Config(BaseModel):
     compute_units: str = "all"
     attention: str = "split_einsum"
