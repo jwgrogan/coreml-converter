@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import json
 import logging
 import os
@@ -8,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -33,6 +35,53 @@ _RESOURCE_TOKENIZER = ["vocab.json", "merges.txt"]
 SCRATCH_PREFIX = "fanny-convert-"
 
 
+def scratch_root(output_dir: Path) -> Path:
+    """Pick a directory to build in.
+
+    Two constraints. First, the path must not contain spaces: Apple's
+    torch2coreml compiles with `os.system(f"xcrun coremlcompiler compile
+    {src} {dst}")` — unquoted — so a space anywhere in the working path splits
+    the command and the compile fails after the (slow) conversion has already
+    succeeded. Fanny's models directory lives under "Application Support", so
+    building in place is not an option.
+
+    Second, prefer the same filesystem as `output_dir`, so publishing a
+    finished build is a rename rather than a multi-GB copy.
+
+    Falls back to the system temp dir, which is space-free on macOS.
+    """
+    output_dir = output_dir.expanduser()
+    if " " not in str(output_dir):
+        return output_dir
+
+    candidates = [Path.home() / ".coreml-converter" / "scratch"]
+    try:
+        target_device = output_dir.stat().st_dev
+    except OSError:
+        target_device = None
+
+    for candidate in candidates:
+        if " " in str(candidate):
+            continue
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+            if target_device is None or candidate.stat().st_dev == target_device:
+                return candidate
+        except OSError:
+            continue
+
+    fallback = Path(tempfile.gettempdir()) / "coreml-converter-scratch"
+    fallback.mkdir(parents=True, exist_ok=True)
+    return fallback
+
+
+def make_build_scratch(output_dir: Path) -> Path:
+    """Create a fresh scratch directory for one build."""
+    root = scratch_root(output_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    return Path(tempfile.mkdtemp(prefix=SCRATCH_PREFIX, dir=str(root)))
+
+
 def sweep_stale_scratch_dirs(
     output_dir: Path, max_age_hours: float = 24.0
 ) -> list[Path]:
@@ -45,22 +94,28 @@ def sweep_stale_scratch_dirs(
 
     Returns the directories actually removed.
     """
-    if not output_dir.is_dir():
-        return []
-
     cutoff = time.time() - (max_age_hours * 3600)
     removed: list[Path] = []
-    for entry in output_dir.iterdir():
-        if not entry.is_dir() or not entry.name.startswith(SCRATCH_PREFIX):
+
+    # Sweep both the scratch root in use and output_dir itself, which is where
+    # older versions built and may still hold abandoned directories.
+    roots = {output_dir.expanduser(), scratch_root(output_dir)}
+    for root in roots:
+        if not root.is_dir():
             continue
-        try:
-            if entry.stat().st_mtime >= cutoff:
+        for entry in root.iterdir():
+            if not entry.is_dir() or not entry.name.startswith(SCRATCH_PREFIX):
                 continue
-            shutil.rmtree(entry, ignore_errors=True)
-            removed.append(entry)
-            logger.info("Removed stale scratch dir %s", entry)
-        except OSError:
-            logger.warning("Could not remove stale scratch dir %s", entry, exc_info=True)
+            try:
+                if entry.stat().st_mtime >= cutoff:
+                    continue
+                shutil.rmtree(entry, ignore_errors=True)
+                removed.append(entry)
+                logger.info("Removed stale scratch dir %s", entry)
+            except OSError:
+                logger.warning(
+                    "Could not remove stale scratch dir %s", entry, exc_info=True
+                )
     return removed
 
 
@@ -139,14 +194,11 @@ class Converter:
         _report("Preparing Apple ml-stable-diffusion converter", 0.05)
         self._require_apple_converter()
 
-        # Everything is assembled inside a scratch dir on the same volume (so
-        # the disk check applies and the final move is a rename, not a copy),
-        # and only moved into place once the build has fully succeeded. A
-        # failed or killed build therefore never leaves a half-written model
-        # folder for Fanny's scanner to find.
-        work_dir = Path(
-            tempfile.mkdtemp(prefix=SCRATCH_PREFIX, dir=str(config.output_dir))
-        )
+        # Everything is assembled inside a space-free scratch dir (see
+        # scratch_root) and only moved into place once the build has fully
+        # succeeded, so a failed or killed build never leaves a half-written
+        # model folder for Fanny's scanner to find.
+        work_dir = make_build_scratch(config.output_dir)
         try:
             resources = self._run_apple_converter(
                 merged_model_path=merged_model_path,
@@ -219,25 +271,34 @@ class Converter:
         )
 
     @staticmethod
-    def _promote(staged: Path, final: Path) -> None:
+    def _move_into_place(staged: Path, final: Path) -> None:
+        """Rename when possible, copy when the scratch is on another volume."""
+        try:
+            os.replace(staged, final)
+        except OSError as e:
+            if e.errno != errno.EXDEV:
+                raise
+            shutil.move(str(staged), str(final))
+
+    @classmethod
+    def _promote(cls, staged: Path, final: Path) -> None:
         """Move a finished build into its published location.
 
-        `staged` lives under `final`'s parent, so os.replace is a same-volume
-        rename. Any previous build of the same name is moved aside first
-        (os.replace refuses a non-empty directory target) and deleted only
-        after the new one is in place, so a crash mid-swap leaves either the
-        old model or the new one — never neither.
+        Any previous build of the same name is moved aside first (a rename
+        refuses a non-empty directory target) and deleted only after the new
+        one is in place, so a crash mid-swap leaves either the old model or
+        the new one — never neither.
         """
         final.parent.mkdir(parents=True, exist_ok=True)
 
         if not final.exists():
-            os.replace(staged, final)
+            cls._move_into_place(staged, final)
             return
 
         superseded = final.with_name(f"{final.name}.superseded-{os.getpid()}")
         os.replace(final, superseded)
         try:
-            os.replace(staged, final)
+            cls._move_into_place(staged, final)
         except OSError:
             os.replace(superseded, final)  # put the old build back
             raise
@@ -302,10 +363,16 @@ class Converter:
             bufsize=1,
         )
         assert proc.stdout is not None
+        # Keep a tail of the output so a failure can say what actually went
+        # wrong; "exited with code 1" alone is not actionable in the UI.
+        tail: deque[str] = deque(maxlen=15)
         for line in proc.stdout:
             stripped = line.rstrip()
             if stripped:
                 logger.info("torch2coreml: %s", stripped)
+                # Progress bars rewrite one line and would fill the tail.
+                if not stripped.endswith("it/s]") and "%|" not in stripped:
+                    tail.append(stripped)
             low = stripped.lower()
             # Coarse phase mapping from Apple's own log lines.
             if "text_encoder" in low and "converting" in low:
@@ -321,8 +388,9 @@ class Converter:
         proc.wait()
 
         if proc.returncode != 0:
+            detail = "\n".join(tail) or "no output captured"
             raise RuntimeError(
-                f"Apple converter exited with code {proc.returncode}. See logs above."
+                f"Apple converter exited with code {proc.returncode}:\n{detail}"
             )
 
         resources = work_dir / "Resources"

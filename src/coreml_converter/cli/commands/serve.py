@@ -12,6 +12,18 @@ from coreml_converter.core.config import DEFAULT_PORT
 @click.option("--host", default="127.0.0.1", help="Host to bind to")
 def serve(port: int, host: str):
     """Start the web UI."""
+    import logging
+
+    # Builds run in a worker thread and log their progress — including every
+    # line Apple's converter writes — through the stdlib logger. Without a
+    # handler on our own package's logger, a failed conversion reports only
+    # "exited with code 1" and the traceback that explains it is discarded.
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(levelname)s:%(name)s:%(message)s",
+    )
+    logging.getLogger("coreml_converter").setLevel(logging.INFO)
+
     from coreml_converter.core.config import get_app_dir, load_config
     from coreml_converter.core.registry import Registry
     from coreml_converter.core.registry.huggingface import HuggingFaceClient

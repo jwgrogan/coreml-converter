@@ -93,15 +93,18 @@ def _run_build(job_id: str, record_dict: dict, cache_dir: str, output_dir: str, 
         # Merge + convert. The merged diffusers pipeline is a multi-GB
         # intermediate, so it goes in a scratch dir that is always cleaned up
         # rather than into output_dir — which is Fanny's models folder, where
-        # a stray `merged_pipeline/` would sit next to the user's models.
+        # a stray `merged_pipeline/` would sit next to the user's models. The
+        # scratch path must also be space-free: Apple's converter embeds this
+        # path in the filenames it later compiles with an unquoted shell
+        # command (see scratch_root).
         from coreml_converter.core.converter.converter import (
-            SCRATCH_PREFIX, sweep_stale_scratch_dirs,
+            make_build_scratch, sweep_stale_scratch_dirs,
         )
 
         out_root = Path(output_dir)
         out_root.mkdir(parents=True, exist_ok=True)
         sweep_stale_scratch_dirs(out_root)
-        scratch = Path(tempfile.mkdtemp(prefix=SCRATCH_PREFIX, dir=str(out_root)))
+        scratch = make_build_scratch(out_root)
         try:
             current_step += 1
             _set_progress(job_id, "merging",

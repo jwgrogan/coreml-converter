@@ -8,6 +8,7 @@ it went, so any failure published a partial model that Fanny's scanner would
 then discover.
 """
 import os
+import shutil
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -17,6 +18,8 @@ import pytest
 from coreml_converter.core.converter.converter import (
     SCRATCH_PREFIX,
     Converter,
+    make_build_scratch,
+    scratch_root,
     sweep_stale_scratch_dirs,
 )
 from coreml_converter.core.models import (
@@ -90,6 +93,73 @@ class TestScratchSweep:
 
     def test_missing_directory_is_not_an_error(self, tmp_path):
         assert sweep_stale_scratch_dirs(tmp_path / "nope") == []
+
+
+class TestScratchLocation:
+    """Apple's torch2coreml compiles with an unquoted `os.system` call, so any
+    space in the build path breaks the compile step — after the slow
+    conversion has already succeeded. Fanny's models directory is under
+    "Application Support", so this is the default case, not an edge case."""
+
+    def test_builds_in_place_when_output_path_has_no_spaces(self, tmp_path):
+        out = tmp_path / "models"
+        out.mkdir()
+
+        assert scratch_root(out) == out
+
+    def test_avoids_output_dir_when_its_path_contains_a_space(self, tmp_path):
+        out = tmp_path / "Application Support" / "models"
+        out.mkdir(parents=True)
+
+        root = scratch_root(out)
+
+        assert " " not in str(root)
+        assert root != out
+
+    def test_scratch_dir_for_a_spaced_output_has_no_spaces(self, tmp_path):
+        out = tmp_path / "Application Support" / "models"
+        out.mkdir(parents=True)
+
+        scratch = make_build_scratch(out)
+
+        assert " " not in str(scratch)
+        assert scratch.is_dir()
+        assert scratch.name.startswith(SCRATCH_PREFIX)
+        shutil.rmtree(scratch, ignore_errors=True)
+
+    def test_full_build_from_a_spaced_output_dir_publishes_correctly(self, tmp_path):
+        out = tmp_path / "Application Support" / "FannyServer" / "models"
+        out.mkdir(parents=True)
+        recipe = make_recipe(out)
+
+        captured = {}
+
+        def record(**kwargs):
+            captured["work_dir"] = kwargs["work_dir"]
+            return fake_resources(kwargs["work_dir"])
+
+        with patch.object(Converter, "_require_apple_converter"), patch.object(
+            Converter, "_run_apple_converter", side_effect=record
+        ):
+            Converter().convert(tmp_path / "merged", recipe)
+
+        # The Apple converter never saw a path containing a space...
+        assert " " not in str(captured["work_dir"])
+        # ...and the model still lands in the spaced output directory.
+        assert (out / "built-model" / "Unet.mlmodelc").is_dir()
+
+    def test_sweep_covers_the_scratch_root_for_a_spaced_output_dir(self, tmp_path):
+        out = tmp_path / "Application Support" / "models"
+        out.mkdir(parents=True)
+
+        stale = make_build_scratch(out)
+        old = time.time() - (48 * 3600)
+        os.utime(stale, (old, old))
+
+        removed = sweep_stale_scratch_dirs(out)
+
+        assert stale in removed
+        assert not stale.exists()
 
 
 class TestAtomicPublish:

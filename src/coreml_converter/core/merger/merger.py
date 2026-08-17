@@ -7,8 +7,10 @@ from typing import Callable
 logger = logging.getLogger(__name__)
 
 try:
+    import torch
     from diffusers import StableDiffusionPipeline
 except ImportError:
+    torch = None
     StableDiffusionPipeline = None
 
 from coreml_converter.core.models import Recipe
@@ -31,14 +33,22 @@ class Merger:
         else:
             model_path = cache_dir / f"{recipe.base_model.source.value}_{recipe.base_model.id}"
 
+        # float32 explicitly: "auto" is not a dtype diffusers accepts here (it
+        # gets parsed as a device string and fails), and Apple's torch2coreml
+        # loads this pipeline expecting full precision — it does its own fp16
+        # conversion downstream.
         if model_path.is_file():
             if model_path.suffix == ".ckpt":
                 logger.warning("WARNING: .ckpt files can contain arbitrary code. .safetensors format is recommended.")
                 if progress_callback:
                     progress_callback("ckpt_security_warning", 0.0)
-            pipe = StableDiffusionPipeline.from_single_file(str(model_path), torch_dtype="auto")
+            pipe = StableDiffusionPipeline.from_single_file(
+                str(model_path), torch_dtype=torch.float32, safety_checker=None
+            )
         else:
-            pipe = StableDiffusionPipeline.from_pretrained(str(model_path), torch_dtype="auto")
+            pipe = StableDiffusionPipeline.from_pretrained(
+                str(model_path), torch_dtype=torch.float32, safety_checker=None
+            )
 
         total_loras = len(recipe.loras)
         for i, entry in enumerate(recipe.loras):
