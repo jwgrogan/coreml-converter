@@ -41,6 +41,34 @@ class BuildStore:
         records = self._read_all()
         return [BuildRecord(**r) for r in records.values()]
 
+    def delete(self, build_id: str) -> bool:
+        """Remove one build from history. Returns whether it existed."""
+        records = self._read_all()
+        if build_id not in records:
+            return False
+        del records[build_id]
+        self._write_all(records)
+        return True
+
+    def delete_finished(self) -> int:
+        """Remove every build that is no longer running.
+
+        A build still in progress is kept: dropping its record would orphan the
+        running job and leave the UI polling an id that no longer exists.
+        """
+        from coreml_converter.core.models import BuildStatus
+
+        records = self._read_all()
+        keep = {
+            build_id: data
+            for build_id, data in records.items()
+            if data.get("status") == BuildStatus.RUNNING.value
+        }
+        removed = len(records) - len(keep)
+        if removed:
+            self._write_all(keep)
+        return removed
+
     def fail_interrupted(self, reason: str = "Interrupted — the converter stopped mid-build") -> int:
         """Mark builds still recorded as running as failed.
 

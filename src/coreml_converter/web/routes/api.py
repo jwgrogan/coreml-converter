@@ -296,3 +296,32 @@ async def builds(request: Request):
         key=lambda r: r.started_at or r.completed_at or _EPOCH, reverse=True
     )
     return [_summarize(r) for r in records]
+
+
+@router.delete("/builds/{build_id}")
+async def delete_build(request: Request, build_id: str):
+    """Forget one build.
+
+    Only the history record is removed — a model this build produced was moved
+    into the user's models directory and is managed there, so deleting the
+    record must not touch it.
+    """
+    store = get_build_store(request)
+    record = store.get(build_id)
+    if record is None:
+        return _error(f"No build with id '{build_id}'", 404, "build_not_found")
+    if record.status == BuildStatus.RUNNING:
+        return _error(
+            "That build is still running. Wait for it to finish first.",
+            409,
+            "build_running",
+        )
+    store.delete(build_id)
+    return {"deleted": build_id}
+
+
+@router.delete("/builds")
+async def delete_finished_builds(request: Request):
+    """Clear every build that is not still running."""
+    removed = get_build_store(request).delete_finished()
+    return {"deleted": removed}

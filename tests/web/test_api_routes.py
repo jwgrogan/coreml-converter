@@ -409,3 +409,51 @@ class TestDisplayName:
             resp = await c.post("/api/upload", json={"path": str(stored)})
 
         assert resp.json()["name"] == "plain"
+
+
+class TestDeleteBuilds:
+    @pytest.mark.asyncio
+    async def test_delete_one_build(self, client, app, tmp_path):
+        record = make_record(tmp_path, status=BuildStatus.COMPLETED)
+        app.state.build_store.save(record)
+
+        async with client as c:
+            resp = await c.delete(f"/api/builds/{record.id}")
+
+        assert resp.status_code == 200
+        assert app.state.build_store.get(record.id) is None
+
+    @pytest.mark.asyncio
+    async def test_delete_unknown_build_is_404(self, client):
+        async with client as c:
+            resp = await c.delete("/api/builds/nope")
+        assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_running_build_cannot_be_deleted(self, client, app, tmp_path):
+        # Dropping it would orphan the job and leave the UI polling a dead id.
+        record = make_record(tmp_path, status=BuildStatus.RUNNING)
+        app.state.build_store.save(record)
+
+        async with client as c:
+            resp = await c.delete(f"/api/builds/{record.id}")
+
+        assert resp.status_code == 409
+        assert resp.json()["error"]["code"] == "build_running"
+        assert app.state.build_store.get(record.id) is not None
+
+    @pytest.mark.asyncio
+    async def test_clear_finished_keeps_running_builds(self, client, app, tmp_path):
+        done = make_record(tmp_path, status=BuildStatus.COMPLETED, name="done")
+        failed = make_record(tmp_path, status=BuildStatus.FAILED, name="failed")
+        running = make_record(tmp_path, status=BuildStatus.RUNNING, name="running")
+        for r in (done, failed, running):
+            app.state.build_store.save(r)
+
+        async with client as c:
+            resp = await c.delete("/api/builds")
+
+        assert resp.status_code == 200
+        assert resp.json()["deleted"] == 2
+        remaining = [r.id for r in app.state.build_store.list_all()]
+        assert remaining == [running.id]

@@ -60,6 +60,8 @@ class Merger:
 
             _report(f"Applying LoRA {i+1}/{total_loras}: {entry.model.name}", (i + 1) / (total_loras + 1))
 
+            describe_lora_incompatibility(lora_file, entry.model.name)
+
             if lora_file.is_file():
                 pipe.load_lora_weights(str(lora_file.parent), weight_name=lora_file.name)
             else:
@@ -77,3 +79,60 @@ class Merger:
         pipe.save_pretrained(str(merged_dir))
         _report("Merge complete", 1.0)
         return merged_dir
+
+
+def describe_lora_incompatibility(lora_file: Path, name: str) -> None:
+    """Reject LoRA layouts diffusers cannot map, with a usable explanation.
+
+    diffusers converts Kohya LoRAs by rewriting keys onto its own UNet module
+    names (`down_blocks`, `mid_block`, `up_blocks`). A LoRA trained against the
+    original Stable Diffusion UNet instead uses `input_blocks` / `middle_block`
+    / `output_blocks`, and the conversion produces module paths that do not
+    exist — surfacing as a 400-character PEFT dump of "target modules not
+    found", which says nothing about what is actually wrong or what to do.
+    """
+    if not lora_file.is_file():
+        return
+    try:
+        from safetensors.torch import load_file
+    except ImportError:
+        return
+    if lora_file.suffix.lower() != ".safetensors":
+        return
+
+    try:
+        keys = list(load_file(str(lora_file)).keys())
+    except Exception:
+        # A load failure is the real loader's problem to report, not ours.
+        return
+
+    ldm_style = any(
+        k.startswith(("lora_unet_input_blocks", "lora_unet_middle_block",
+                      "lora_unet_output_blocks"))
+        for k in keys
+    )
+    diffusers_style = any(
+        k.startswith(("lora_unet_down_blocks", "lora_unet_mid_block",
+                      "lora_unet_up_blocks"))
+        for k in keys
+    )
+    if ldm_style and not diffusers_style:
+        raise RuntimeError(
+            f"LoRA '{name}' uses the original Stable Diffusion layout "
+            f"(input_blocks/middle_block), which this converter cannot map onto "
+            f"the diffusers UNet it merges into. LoRAs exported in diffusers "
+            f"layout (down_blocks/up_blocks) work — most CivitAI SD 1.5 LoRAs "
+            f"are. Re-export this one in diffusers format, or use a different "
+            f"LoRA."
+        )
+
+    if any("hada_" in k for k in keys):
+        raise RuntimeError(
+            f"LoRA '{name}' is a LyCORIS/LoHa model, which diffusers cannot "
+            f"fuse. Use a standard LoRA."
+        )
+    if any("lokr_" in k for k in keys):
+        raise RuntimeError(
+            f"LoRA '{name}' is a LyCORIS/LoKr model, which diffusers cannot "
+            f"fuse. Use a standard LoRA."
+        )
