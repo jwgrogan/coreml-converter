@@ -22,7 +22,17 @@ ap.add_argument("--trigger", default="fnnyspike")
 ap.add_argument("--class-token", default="woman")
 ap.add_argument("--scale", type=float, default=0.8)
 ap.add_argument("--steps", type=int, default=28)
+# Which checkpoint to GENERATE with. Distinct from the checkpoint the LoRA was
+# TRAINED on: comparing candidates from a base sweep requires holding the
+# generation base fixed across them, and separately checking each on its own.
+ap.add_argument("--base", default=CKPT,
+                help="generation checkpoint (default: URPM)")
+# The no-LoRA row only depends on --base, so it is identical across every LoRA
+# judged on the same checkpoint. Skip it when sweeping to halve generation time.
+ap.add_argument("--skip-base-row", action="store_true",
+                help="skip the no-LoRA reference row")
 args = ap.parse_args()
+CKPT = os.path.expanduser(args.base)
 
 OUT = pathlib.Path(args.out); OUT.mkdir(parents=True, exist_ok=True)
 subj = f"{args.trigger} {args.class_token}"
@@ -59,8 +69,12 @@ def run(tag):
     return imgs
 
 
-print("== baseline (no lora) ==", flush=True)
-base = run("base")
+if args.skip_base_row:
+    print("== baseline (no lora) skipped ==", flush=True)
+    base = []
+else:
+    print("== baseline (no lora) ==", flush=True)
+    base = run("base")
 
 print(f"== loading lora {args.lora} (merger code path) ==", flush=True)
 lf = pathlib.Path(args.lora)
@@ -75,11 +89,12 @@ lora = run("lora")
 
 # side-by-side contact sheet: baseline row over lora row
 W = H = 512
-sheet = Image.new("RGB", (W * len(PROMPTS), H * 2), "white")
-for i, im in enumerate(base):
-    sheet.paste(im, (i * W, 0))
-for i, im in enumerate(lora):
-    sheet.paste(im, (i * W, H))
+rows = ([base] if base else []) + [lora]
+sheet = Image.new("RGB", (W * len(PROMPTS), H * len(rows)), "white")
+for r, row in enumerate(rows):
+    for i, im in enumerate(row):
+        sheet.paste(im, (i * W, r * H))
 sheet = sheet.resize((sheet.width // 2, sheet.height // 2), Image.LANCZOS)
 sheet.save(OUT / "comparison.png")
-print(f"\ncontact sheet -> {OUT/'comparison.png'} (top row: base, bottom row: +lora)", flush=True)
+layout = "top row: base, bottom row: +lora" if base else "single row: +lora"
+print(f"\ncontact sheet -> {OUT/'comparison.png'} ({layout})", flush=True)
