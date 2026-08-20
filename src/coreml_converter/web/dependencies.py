@@ -22,3 +22,11 @@ def get_registry(request: Request):
 
 def get_build_store(request: Request):
     return request.app.state.build_store
+
+
+def get_train_store(request: Request):
+    return request.app.state.train_store
+
+
+def get_train_manager(request: Request):
+    return request.app.state.train_manager
